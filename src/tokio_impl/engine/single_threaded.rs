@@ -298,4 +298,142 @@ mod tests {
 
         eng.run().await;
     }
+
+    mod connector_lifecycle {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use super::*;
+        use crate::base::connector::{
+            Connector, ConnectorFuture, ValueStream, get_connector, unregister_connector,
+        };
+        use crate::base::engine::messages::EngineMessage::Reset;
+        use libhaystack::val::Value;
+
+        /// Records `start`/`stop` calls so tests can observe the engine
+        /// driving the lifecycle.
+        struct FlagConnector {
+            started: Arc<AtomicBool>,
+            stopped: Arc<AtomicBool>,
+        }
+
+        impl Connector for FlagConnector {
+            fn start(&self) -> ConnectorFuture<'_, ()> {
+                self.started.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+
+            fn stop(&self) -> ConnectorFuture<'_, ()> {
+                self.stopped.store(true, Ordering::SeqCst);
+                Box::pin(async { Ok(()) })
+            }
+
+            fn subscribe(&self, _address: &str) -> ConnectorFuture<'_, ValueStream> {
+                Box::pin(async { Ok(Box::pin(futures::stream::empty()) as ValueStream) })
+            }
+
+            fn publish(&self, _address: &str, _value: Value) -> ConnectorFuture<'_, ()> {
+                Box::pin(async { Ok(()) })
+            }
+
+            fn request(&self, _address: &str, value: Value) -> ConnectorFuture<'_, Value> {
+                Box::pin(async move { Ok(value) })
+            }
+        }
+
+        /// The connector registry is process-global and tests run in
+        /// parallel, so every test uses a unique name.
+        fn setup(
+            prefix: &str,
+        ) -> (
+            String,
+            Arc<AtomicBool>,
+            Arc<AtomicBool>,
+            SingleThreadedEngine,
+        ) {
+            let name = format!("{prefix}-{}", Uuid::new_v4());
+            let started = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::new(AtomicBool::new(false));
+
+            let mut eng = SingleThreadedEngine::new();
+            eng.add_connector(
+                &name,
+                Arc::new(FlagConnector {
+                    started: started.clone(),
+                    stopped: stopped.clone(),
+                }),
+            )
+            .expect("connector added");
+
+            (name, started, stopped, eng)
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn duplicate_name_is_rejected() {
+            let (name, _, _, mut eng) = setup("dup");
+            let dup = Arc::new(FlagConnector {
+                started: Arc::default(),
+                stopped: Arc::default(),
+            });
+            eng.add_connector(&name, dup)
+                .expect_err("duplicate connector name is rejected");
+            unregister_connector(&name);
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn started_on_run_and_stopped_on_shutdown() {
+            let (name, started, stopped, mut eng) = setup("shutdown");
+
+            let (sender, _receiver) = mpsc::channel(32);
+            let engine_sender = eng.create_message_channel(Uuid::new_v4(), sender);
+
+            thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    sleep(Duration::from_millis(100)).await;
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+
+            assert!(started.load(Ordering::SeqCst), "start driven by run()");
+            assert!(stopped.load(Ordering::SeqCst), "stop driven on shutdown");
+            assert!(
+                get_connector(&name).is_some(),
+                "shutdown keeps the connector registered for a re-run"
+            );
+            unregister_connector(&name);
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn reset_stops_and_unregisters() {
+            let (name, started, stopped, mut eng) = setup("reset");
+
+            let (sender, _receiver) = mpsc::channel(32);
+            let engine_sender = eng.create_message_channel(Uuid::new_v4(), sender);
+
+            thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    sleep(Duration::from_millis(100)).await;
+                    let _ = engine_sender.send(Reset).await;
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+
+            assert!(started.load(Ordering::SeqCst), "start driven by run()");
+            assert!(stopped.load(Ordering::SeqCst), "stop driven on reset");
+            assert!(
+                get_connector(&name).is_none(),
+                "reset unregisters the connector"
+            );
+        }
+    }
 }
