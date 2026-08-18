@@ -299,6 +299,78 @@ mod tests {
         eng.run().await;
     }
 
+    mod external_blocks {
+        use std::sync::Arc;
+
+        use super::*;
+        use crate::base::connector::unregister_connector;
+        use crate::blocks::external::ExternalIn;
+        use crate::blocks::external::support::mock::MockConnector;
+        use libhaystack::val::Value;
+
+        /// End-to-end: a [`MockConnector`] feeds an [`ExternalIn`] block
+        /// whose output is wired to an `Add` block — external data flows
+        /// through the connector subscription into the pin graph.
+        #[tokio::test(flavor = "current_thread")]
+        async fn external_in_feeds_add() {
+            use crate::base::block::connect::connect_output;
+
+            let name = format!("e2e-{}", Uuid::new_v4());
+            let mock = Arc::new(MockConnector::default());
+
+            let mut ext = ExternalIn::new();
+            ext.connector.val = Some(Value::make_str(&name));
+            ext.address.val = Some(Value::make_str("sensor"));
+
+            let mut add = Add::new();
+            let add_uuid = *add.id();
+            connect_output(&mut ext.out, add.inputs_mut()[0]).expect("Connected");
+
+            let mut eng = SingleThreadedEngine::new();
+            eng.add_connector(&name, mock.clone()).expect("added");
+
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_mock = mock.clone();
+            thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    // Wait for the block to open its subscription.
+                    let mut tries = 0;
+                    while !driver_mock.has_subscription("sensor") {
+                        sleep(Duration::from_millis(50)).await;
+                        tries += 1;
+                        assert!(tries < 100, "block never subscribed");
+                    }
+
+                    driver_mock.feed("sensor", Ok(21.into()));
+                    sleep(Duration::from_millis(500)).await;
+
+                    let _ = engine_sender
+                        .send(InspectBlockReq(channel_id, add_uuid))
+                        .await;
+                    match receiver.recv().await {
+                        Some(InspectBlockRes(Ok(data))) => {
+                            assert_eq!(data.outputs["out"].val, 21.into());
+                        }
+                        other => panic!("Expected InspectBlockRes(Ok), got {:?}", other),
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.schedule(ext).unwrap();
+            eng.schedule(add).unwrap();
+            eng.run().await;
+
+            unregister_connector(&name);
+        }
+    }
+
     mod connector_lifecycle {
         use std::sync::{
             Arc,
