@@ -70,21 +70,61 @@ export function useWidgetConfig(getWidget: () => Widget | undefined) {
  * Subscribes an input widget to its `valueSource` — the address of a
  * plain ExternalOut block whose published values the widget tracks as
  * feedback. Values are coerced like config sources and handed to
- * `onFeedback`; the component decides precedence (feedback must never
- * be re-pushed to the engine, and should be ignored while the user is
- * interacting). Call during component init.
+ * `onFeedback`, which must never re-push them to the engine.
+ *
+ * When `isInteracting` is given, feedback arriving while it is true is
+ * deferred rather than dropped: the last suppressed value is applied
+ * when the interaction ends — unless the user edited during it (call
+ * `markEdited()` from the widget's push handlers), in which case it is
+ * discarded and the next publish re-syncs. Call during component init.
  */
 export function useValueFeedback(
   getWidget: () => Widget | undefined,
   onFeedback: (value: unknown) => void,
+  isInteracting?: () => boolean,
 ) {
+  let pending: unknown;
+  let hasPending = false;
+  let edited = false;
+
   $effect(() => {
     const address = getWidget()?.valueSource;
+    hasPending = false;
+    pending = undefined;
     if (!address) return;
     // Deliberate: the cached publish replays here before the widget's
     // mount push, so a pasted widget pushes the tracked value.
     return untrack(() =>
-      onValue(address, (value) => onFeedback(coerce(value))),
+      onValue(address, (value) => {
+        if (isInteracting?.()) {
+          pending = coerce(value);
+          hasPending = true;
+          return;
+        }
+        onFeedback(coerce(value));
+      }),
     );
   });
+
+  if (isInteracting) {
+    $effect(() => {
+      if (isInteracting()) {
+        edited = false;
+        return;
+      }
+      if (hasPending) {
+        if (!edited) untrack(() => onFeedback(pending));
+        pending = undefined;
+        hasPending = false;
+      }
+      edited = false;
+    });
+  }
+
+  return {
+    /** The user edited during this interaction — their push wins. */
+    markEdited() {
+      edited = true;
+    },
+  };
 }

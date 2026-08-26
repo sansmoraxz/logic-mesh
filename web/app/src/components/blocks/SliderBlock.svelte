@@ -29,14 +29,15 @@
   let dragging = $state(false);
   let focused = $state(false);
   const interacting = $derived(dragging || focused);
-  useValueFeedback(
+  const feedback = useValueFeedback(
     () => block.widget,
     (value) => {
-      if (interacting || !block.widget) return;
+      if (!block.widget) return;
       const num = numericValue(value);
       if (num == null) return;
       block.widget.config = { ...block.widget.config, value: num };
     },
+    () => interacting,
   );
 
   onMount(() => {
@@ -44,6 +45,7 @@
   });
 
   function onSliderInput(event: Event) {
+    feedback.markEdited();
     const val = Number((event.target as HTMLInputElement).value);
     if (block.widget) {
       block.widget.config = { ...block.widget.config, value: val };

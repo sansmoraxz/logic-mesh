@@ -20,12 +20,13 @@
   // Feedback tracks the source while the input is not focused; a user
   // edit wins during interaction and is never echoed back by feedback.
   let interacting = $state(false);
-  useValueFeedback(
+  const feedback = useValueFeedback(
     () => block.widget,
     (value) => {
-      if (interacting || value == null || !block.widget) return;
+      if (value == null || !block.widget) return;
       block.widget.config = { ...block.widget.config, value: String(value) };
     },
+    () => interacting,
   );
 
   onMount(() => {
@@ -35,6 +36,7 @@
   });
 
   function onInputChange(event: Event) {
+    feedback.markEdited();
     const val = (event.target as HTMLInputElement).value;
     if (block.widget) {
       block.widget.config = { ...block.widget.config, value: val };

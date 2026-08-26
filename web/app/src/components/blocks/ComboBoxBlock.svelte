@@ -26,12 +26,13 @@
 
   // Feedback tracks the source while the dropdown is closed; a user
   // selection wins during interaction and is never echoed back.
-  useValueFeedback(
+  const feedback = useValueFeedback(
     () => block.widget,
     (value) => {
-      if (open || value == null || !block.widget) return;
+      if (value == null || !block.widget) return;
       block.widget.config = { ...block.widget.config, value: String(value) };
     },
+    () => open,
   );
 
   // Items from the CSV config (custom entries are persisted into it)
@@ -54,6 +55,7 @@
 
   function onSelect(value: string | undefined) {
     if (value != null) {
+      feedback.markEdited();
       if (block.widget) {
         block.widget.config = { ...block.widget.config, value };
       }
