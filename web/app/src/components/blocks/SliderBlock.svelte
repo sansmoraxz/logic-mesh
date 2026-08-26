@@ -4,6 +4,7 @@
   import BlockCommons from '../BlockCommons.svelte';
   import type { Block } from '$lib/Block';
   import { pushValue } from '$lib/UiConnector';
+  import { useValueFeedback, useWidgetConfig } from '$lib/WidgetConfig.svelte';
   import { numericValue } from '$lib/utils';
 
   interface Props {
@@ -13,12 +14,30 @@
   let { data }: Props = $props();
 
   const block = $derived(data.value);
-  const config = $derived(block.widget?.config ?? {});
+  const widgetConfig = useWidgetConfig(() => block.widget);
+  const config = $derived(widgetConfig.config);
 
   const numValue = $derived(numericValue(config.value) ?? 0);
   const min = $derived(numericValue(config.min) ?? 0);
   const max = $derived(numericValue(config.max) ?? 100);
   const step = $derived(numericValue(config.step) ?? 1);
+
+  // Feedback tracks the source while the user is not interacting; a
+  // user edit wins during interaction and is never echoed back by
+  // feedback. Dragging is tracked via pointer events besides focus —
+  // WebKit/touch don't reliably focus a range input on drag.
+  let dragging = $state(false);
+  let focused = $state(false);
+  const interacting = $derived(dragging || focused);
+  useValueFeedback(
+    () => block.widget,
+    (value) => {
+      if (interacting || !block.widget) return;
+      const num = numericValue(value);
+      if (num == null) return;
+      block.widget.config = { ...block.widget.config, value: num };
+    },
+  );
 
   onMount(() => {
     pushValue(block.id, numValue);
@@ -27,7 +46,7 @@
   function onSliderInput(event: Event) {
     const val = Number((event.target as HTMLInputElement).value);
     if (block.widget) {
-      block.widget.config = { ...config, value: val };
+      block.widget.config = { ...block.widget.config, value: val };
     }
     pushValue(block.id, val);
   }
@@ -43,6 +62,11 @@
         {step}
         value={numValue}
         oninput={onSliderInput}
+        onpointerdown={() => (dragging = true)}
+        onpointerup={() => (dragging = false)}
+        onpointercancel={() => (dragging = false)}
+        onfocus={() => (focused = true)}
+        onblur={() => (focused = false)}
         class="slider nodrag"
       />
       <span class="slider-value">{numValue}</span>

@@ -5,6 +5,7 @@
   import BlockCommons from '../BlockCommons.svelte';
   import type { Block } from '$lib/Block';
   import { pushValue } from '$lib/UiConnector';
+  import { useValueFeedback, useWidgetConfig } from '$lib/WidgetConfig.svelte';
 
   interface Props {
     data: { value: Block };
@@ -13,7 +14,19 @@
   let { data }: Props = $props();
 
   const block = $derived(data.value);
-  const config = $derived(block.widget?.config ?? {});
+  const widgetConfig = useWidgetConfig(() => block.widget);
+  const config = $derived(widgetConfig.config);
+
+  // Feedback tracks the source while the input is not focused; a user
+  // edit wins during interaction and is never echoed back by feedback.
+  let interacting = $state(false);
+  useValueFeedback(
+    () => block.widget,
+    (value) => {
+      if (interacting || value == null || !block.widget) return;
+      block.widget.config = { ...block.widget.config, value: String(value) };
+    },
+  );
 
   onMount(() => {
     if (config.value != null) {
@@ -24,7 +37,7 @@
   function onInputChange(event: Event) {
     const val = (event.target as HTMLInputElement).value;
     if (block.widget) {
-      block.widget.config = { ...config, value: val };
+      block.widget.config = { ...block.widget.config, value: val };
     }
     pushValue(block.id, val);
   }
@@ -35,6 +48,8 @@
     <Input
       value={String(config.value ?? '')}
       oninput={onInputChange}
+      onfocus={() => (interacting = true)}
+      onblur={() => (interacting = false)}
       class="h-7 w-28 text-xs"
     />
     <Handle

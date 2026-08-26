@@ -3,6 +3,7 @@
   import BlockCommons from '../BlockCommons.svelte';
   import type { Block } from '$lib/Block';
   import { onValue } from '$lib/UiConnector';
+  import { useWidgetConfig } from '$lib/WidgetConfig.svelte';
   import { isHaystackNumber, numericValue, unitOf } from '$lib/utils';
 
   interface Props {
@@ -12,7 +13,8 @@
   let { data }: Props = $props();
 
   const block = $derived(data.value);
-  const config = $derived(block.widget?.config ?? {});
+  const widgetConfig = useWidgetConfig(() => block.widget);
+  const config = $derived(widgetConfig.config);
 
   let raw = $state<unknown>(undefined);
   $effect(() => onValue(block.id, (v) => (raw = v)));

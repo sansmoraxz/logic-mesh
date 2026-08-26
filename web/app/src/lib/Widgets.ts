@@ -73,7 +73,7 @@ export const widgetBlockDescs: WidgetBlockDesc[] = [
   widgetDesc(
     'Led',
     'out',
-    'Indicator lamp; lit when the value is true. Optional label and color.',
+    'Indicator lamp; lit when in is true. Optional label and color (hex/css).',
     { label: '', color: '#3ecf6b' },
   ),
   widgetDesc(
@@ -85,7 +85,7 @@ export const widgetBlockDescs: WidgetBlockDesc[] = [
   widgetDesc(
     'Display',
     'out',
-    'Numeric readout with optional label and unit.',
+    'Numeric readout with optional label and unit suffix.',
     {
       unit: '',
       label: '',

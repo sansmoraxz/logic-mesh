@@ -8,6 +8,18 @@ import type { BlockDesc, BlockPin } from 'logic-mesh';
 export interface Widget {
   kind: string;
   config?: Record<string, unknown>;
+  /**
+   * Config key → address of a plain ExternalOut block. Values the
+   * engine publishes to that address override the literal `config`
+   * value for the key at runtime.
+   */
+  configSources?: Record<string, string>;
+  /**
+   * Address of a plain ExternalOut block whose published values an
+   * input widget tracks as feedback. User interaction still pushes
+   * through the widget's own address and wins while interacting.
+   */
+  valueSource?: string;
 }
 
 /**

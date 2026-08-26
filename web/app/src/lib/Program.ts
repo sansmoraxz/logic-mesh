@@ -34,6 +34,12 @@ export function save(ops: {
       program.blocks[node.id].widget = {
         kind: data.widget.kind,
         config: data.widget.config ? { ...data.widget.config } : undefined,
+        configSources:
+          data.widget.configSources &&
+          Object.keys(data.widget.configSources).length > 0
+            ? { ...data.widget.configSources }
+            : undefined,
+        valueSource: data.widget.valueSource,
       };
     }
 

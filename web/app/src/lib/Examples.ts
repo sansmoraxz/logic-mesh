@@ -10,7 +10,7 @@ import type { Program } from 'logic-mesh';
 const datReset = {
   name: 'DAT Temperature Reset',
   description:
-    'Discharge-air-temperature reset (ASHRAE G36 style): as outdoor temp rises, the supply-air setpoint falls. PID drives the simulated SAT toward the SP.',
+    'Discharge-air-temperature reset (ASHRAE G36 style): as outdoor temp rises, the supply-air setpoint falls. PID drives the simulated SAT toward the SP. The PV bar scales to the live SP (config drive) and the tracking slider follows the auto SP until you drag it (value feedback).',
   blocks: {
     '11111111-1111-4111-8111-000000000001': {
       name: 'ExternalIn',
@@ -161,6 +161,47 @@ const datReset = {
         },
       },
     },
+    // The bar's `max` is driven at runtime by the SAT SP published to
+    // the plain ExternalOut …0008, so its scale follows the live SP.
+    '11111111-1111-4111-8111-00000000000a': {
+      name: 'ExternalOut',
+      lib: 'core',
+      positions: { x: 990, y: 320 },
+      widget: {
+        kind: 'Bar',
+        config: { min: 50, max: 70, label: 'PV vs SP' },
+        configSources: { max: '11111111-1111-4111-8111-000000000008' },
+      },
+      inputs: {
+        in: { value: 58.93, isConnected: false },
+        connector: { value: 'ui', isConnected: false },
+        address: {
+          value: '11111111-1111-4111-8111-00000000000a',
+          isConnected: false,
+        },
+      },
+    },
+    // Operator SP station: tracks the auto SP published to …0008 as
+    // feedback until the user drags the slider.
+    '11111111-1111-4111-8111-00000000000b': {
+      name: 'ExternalIn',
+      lib: 'core',
+      positions: { x: 81, y: 60 },
+      label: 'SAT SP (tracks auto)',
+      widget: {
+        kind: 'Slider',
+        config: { value: 60, min: 50, max: 70, step: 0.5 },
+        valueSource: '11111111-1111-4111-8111-000000000008',
+      },
+      inputs: {
+        connector: { value: 'ui', isConnected: false },
+        address: {
+          value: '11111111-1111-4111-8111-00000000000b',
+          isConnected: false,
+        },
+      },
+      outputs: { out: { value: 60 } },
+    },
   },
   links: {
     'c5011201-d2e8-4b34-aac1-531ec60fc780': {
@@ -210,6 +251,12 @@ const datReset = {
       targetBlockPinName: 'in',
       sourceBlockUuid: '11111111-1111-4111-8111-000000000003',
       targetBlockUuid: '11111111-1111-4111-8111-000000000007',
+    },
+    '2f8c1b4d-6a3e-47f0-9d52-1e7b9c0a5d38': {
+      sourceBlockPinName: 'out',
+      targetBlockPinName: 'in',
+      sourceBlockUuid: '11111111-1111-4111-8111-000000000003',
+      targetBlockUuid: '11111111-1111-4111-8111-00000000000a',
     },
   },
 } as Program;

@@ -26,7 +26,12 @@
     name: string;
     lib: string;
     label?: string;
-    widget?: { kind: string; config?: Record<string, unknown> };
+    widget?: {
+      kind: string;
+      config?: Record<string, unknown>;
+      configSources?: Record<string, string>;
+      valueSource?: string;
+    };
     inputs?: Record<string, BlockPin>;
     outputs?: Record<string, BlockPin>;
   };
@@ -36,7 +41,7 @@
   import FitView from '../components/FitView.svelte';
 
   import { blockInstance } from '$lib/Block';
-  import { attachUiConnector, forgetAddress } from '$lib/UiConnector';
+  import { attachUiConnector, forgetBlockAddress } from '$lib/UiConnector';
   import { useEngine } from '$lib/Engine';
   import { model, blockInstances } from '$lib/model.svelte';
   import { prepare, pushToEngine, save } from '$lib/Program';
@@ -282,6 +287,13 @@
         blockValue.widget = {
           kind: cn.widget.kind,
           config: cn.widget.config ? { ...cn.widget.config } : undefined,
+          // Source addresses reference other (plain ExternalOut) blocks
+          // — like MultiChart series addresses inside `config` — so
+          // they are carried over verbatim, not rewritten.
+          configSources: cn.widget.configSources
+            ? { ...cn.widget.configSources }
+            : undefined,
+          valueSource: cn.widget.valueSource,
         };
       }
 
@@ -394,6 +406,10 @@
         block.value.widget = {
           kind: data.widget.kind,
           config: data.widget.config ? { ...data.widget.config } : undefined,
+          configSources: data.widget.configSources
+            ? { ...data.widget.configSources }
+            : undefined,
+          valueSource: data.widget.valueSource,
         };
       }
 
@@ -467,8 +483,9 @@
           command.removeLink(linkId);
         }
         for (const node of deletedNodes ?? []) {
-          if (blockInstances.get(node.id)?.value.widget) {
-            forgetAddress(node.id);
+          const inst = blockInstances.get(node.id)?.value;
+          if (inst) {
+            forgetBlockAddress(inst);
           }
           command.removeBlock(node.id);
           blockInstances.delete(node.id);

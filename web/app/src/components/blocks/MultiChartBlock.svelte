@@ -5,6 +5,7 @@
   import BlockCommons from '../BlockCommons.svelte';
   import type { Block } from '$lib/Block';
   import { onValue } from '$lib/UiConnector';
+  import { useWidgetConfig } from '$lib/WidgetConfig.svelte';
   import { numericValue } from '$lib/utils';
 
   interface Props {
@@ -14,7 +15,8 @@
   let { data }: Props = $props();
 
   const block = $derived(data.value);
-  const config = $derived(block.widget?.config ?? {});
+  const widgetConfig = useWidgetConfig(() => block.widget);
+  const config = $derived(widgetConfig.config);
   const chartId = `multichart-${crypto.randomUUID()}`;
 
   const MAX_POINTS = 60;
@@ -23,30 +25,51 @@
   type SeriesDef = { label: string; address?: string };
 
   // Series 0 is this node's own ExternalOut 'in'; additional series
-  // subscribe to other ExternalOut blocks' addresses.
+  // subscribe to other ExternalOut blocks' addresses. Structurally
+  // memoized: a new config identity (e.g. a driven configSources key)
+  // must not rebuild datasets or churn subscriptions when the series
+  // themselves are unchanged.
+  let prevDefs: SeriesDef[] = [];
+  function memoDefs(defs: SeriesDef[]): SeriesDef[] {
+    if (
+      defs.length === prevDefs.length &&
+      defs.every(
+        (d, i) =>
+          d.label === prevDefs[i].label && d.address === prevDefs[i].address,
+      )
+    ) {
+      return prevDefs;
+    }
+    prevDefs = defs;
+    return defs;
+  }
   const seriesDefs = $derived.by((): SeriesDef[] => {
     const raw = config.series;
     if (Array.isArray(raw) && raw.length > 0) {
-      return raw.map((s, i) => {
-        const o = (s ?? {}) as Record<string, unknown>;
-        return {
-          label:
-            o.label != null && String(o.label).length > 0
-              ? String(o.label)
-              : `series ${i + 1}`,
-          address:
-            typeof o.address === 'string' && o.address ? o.address : undefined,
-        };
-      });
+      return memoDefs(
+        raw.map((s, i) => {
+          const o = (s ?? {}) as Record<string, unknown>;
+          return {
+            label:
+              o.label != null && String(o.label).length > 0
+                ? String(o.label)
+                : `series ${i + 1}`,
+            address:
+              typeof o.address === 'string' && o.address
+                ? o.address
+                : undefined,
+          };
+        }),
+      );
     }
     // Legacy single-series config shape ({ label }).
     const label = config.label;
-    return [
+    return memoDefs([
       {
         label:
           label != null && String(label).length > 0 ? String(label) : 'series',
       },
-    ];
+    ]);
   });
 
   let chart: Chart | undefined;

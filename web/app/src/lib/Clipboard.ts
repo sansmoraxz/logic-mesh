@@ -53,6 +53,10 @@ export function clipboardWrite(nodes: Node[], edges: Edge[]) {
               config: block.widget.config
                 ? { ...block.widget.config }
                 : undefined,
+              configSources: block.widget.configSources
+                ? { ...block.widget.configSources }
+                : undefined,
+              valueSource: block.widget.valueSource,
             }
           : undefined,
         label: block.label,

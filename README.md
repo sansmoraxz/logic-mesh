@@ -45,6 +45,8 @@ It bundles a UI widget set (`Slider`, `Gauge`, `Bar`, `Display`, `Led`, `Chart`,
 - **Anti-Short-Cycle Compressor** — `OnDelay` warmup + `OffDelay` cool-down lockout.
 - **Outdoor Lighting (dusk-to-cutoff)** — `Sun` (sunrise/sunset) + `Schedule` + boolean composition driving a streetlight.
 
+Widget configuration can also be driven by the running program: any config field (a slider's `max`, a bar's range, a LED label, …) may name the address of a plain `ExternalOut` block via the widget's `configSources` map, and the live value then overrides the literal default. Input widgets additionally accept a `valueSource` address whose published values they track as feedback — the classic HMI "setpoint follows the program until the operator overrides it" idiom — while user edits still push through the widget's own address. Drive an input widget's value through `valueSource`, not a `configSources` entry on its `value` key.
+
 ## Getting started
 
 ### Rust

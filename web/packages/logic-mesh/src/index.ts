@@ -310,7 +310,12 @@ export interface Program {
        * UI widget identity for ExternalIn/ExternalOut blocks placed as
        * widgets. Editor-only metadata; the engine ignores it.
        */
-      widget?: { kind: string; config?: Record<string, unknown> };
+      widget?: {
+        kind: string;
+        config?: Record<string, unknown>;
+        configSources?: Record<string, string>;
+        valueSource?: string;
+      };
 
       positions: {
         x: number;

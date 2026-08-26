@@ -3,7 +3,7 @@ import type { BlockDesc } from 'logic-mesh';
 import { SvelteMap } from 'svelte/reactivity';
 import { blockInstance, type Block } from './Block';
 import { useEngine } from './Engine';
-import { forgetAddress, UI_CONNECTOR_NAME } from './UiConnector';
+import { forgetBlockAddress, UI_CONNECTOR_NAME } from './UiConnector';
 import { isWidgetDesc } from './Widgets';
 
 const { command, blocks } = useEngine();
@@ -88,8 +88,8 @@ class FlowModel {
     this.edges = this.edges.filter((e) => e.source !== id && e.target !== id);
     command.removeBlock(id);
     blockInstances.delete(id);
-    if (block?.value.widget) {
-      forgetAddress(id);
+    if (block) {
+      forgetBlockAddress(block.value);
     }
   }
 

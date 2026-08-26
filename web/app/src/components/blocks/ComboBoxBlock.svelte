@@ -8,6 +8,7 @@
   import BlockCommons from '../BlockCommons.svelte';
   import type { Block } from '$lib/Block';
   import { pushValue } from '$lib/UiConnector';
+  import { useValueFeedback, useWidgetConfig } from '$lib/WidgetConfig.svelte';
 
   interface Props {
     data: { value: Block };
@@ -16,10 +17,22 @@
   let { data }: Props = $props();
 
   const block = $derived(data.value);
-  const config = $derived(block.widget?.config ?? {});
+  const widgetConfig = useWidgetConfig(() => block.widget);
+  const config = $derived(widgetConfig.config);
 
   let customEntry = $state('');
   let showCustomInput = $state(false);
+  let open = $state(false);
+
+  // Feedback tracks the source while the dropdown is closed; a user
+  // selection wins during interaction and is never echoed back.
+  useValueFeedback(
+    () => block.widget,
+    (value) => {
+      if (open || value == null || !block.widget) return;
+      block.widget.config = { ...block.widget.config, value: String(value) };
+    },
+  );
 
   // Items from the CSV config (custom entries are persisted into it)
   const items = $derived(
@@ -42,7 +55,7 @@
   function onSelect(value: string | undefined) {
     if (value != null) {
       if (block.widget) {
-        block.widget.config = { ...config, value };
+        block.widget.config = { ...block.widget.config, value };
       }
       pushValue(block.id, value);
     }
@@ -51,13 +64,20 @@
   function addCustomItem() {
     const val = customEntry.trim();
     if (val) {
-      if (!items.includes(val) && block.widget) {
+      if (block.widget) {
         // Persist the custom entry into the widget config so it
-        // survives save/copy.
-        block.widget.config = {
-          ...config,
-          items: [...items, val].join(','),
-        };
+        // survives save/copy. Build from the literal items, not the
+        // effective ones — a driven override must not get baked in.
+        const literal = String(block.widget.config?.items ?? '')
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean);
+        if (!literal.includes(val)) {
+          block.widget.config = {
+            ...block.widget.config,
+            items: [...literal, val].join(','),
+          };
+        }
       }
       onSelect(val);
     }
@@ -79,7 +99,12 @@
 <BlockCommons data={block}>
   <div class="ui-block-body">
     <div class="combo-container">
-      <Select.Root type="single" value={selected} onValueChange={onSelect}>
+      <Select.Root
+        type="single"
+        value={selected}
+        onValueChange={onSelect}
+        bind:open
+      >
         <Select.Trigger class="h-7 w-32 text-xs">
           {selected ?? 'Select...'}
         </Select.Trigger>

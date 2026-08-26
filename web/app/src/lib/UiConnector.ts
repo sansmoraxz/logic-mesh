@@ -1,4 +1,5 @@
 import type { BlocksEngine, ConnectorCallback, JsConnector } from 'logic-mesh';
+import type { Block } from './Block';
 
 // The connector every UI widget exchanges values through. Input widgets
 // push into it and ExternalIn blocks subscribe; ExternalOut blocks
@@ -167,6 +168,19 @@ export function setUiPushPaused(paused: boolean) {
 /** Drops the cached values for a removed widget block's address. */
 export function forgetAddress(address: string) {
   uiConnector.forgetAddress(address);
+}
+
+/**
+ * Drops cached values for a deleted ExternalIn/ExternalOut block —
+ * plain ones included, or their cached publish would replay as a
+ * live-looking value to later subscribers of the same address.
+ */
+export function forgetBlockAddress(block: Block) {
+  if (block.desc.name !== 'ExternalIn' && block.desc.name !== 'ExternalOut') {
+    return;
+  }
+  const address = block.inputs['address']?.value;
+  forgetAddress(typeof address === 'string' && address ? address : block.id);
 }
 
 /**
