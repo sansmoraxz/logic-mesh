@@ -59,10 +59,17 @@ pub(crate) mod mock {
             Mutex<HashMap<String, mpsc::UnboundedSender<Result<Value, ConnectorError>>>>,
         /// Every `(address, value)` pair published through the connector.
         pub(crate) published: Mutex<Vec<(String, Value)>>,
+        /// Every `(address, value)` pair requested through the connector.
+        pub(crate) requests: Mutex<Vec<(String, Value)>>,
         /// When set, `subscribe` fails with [`ConnectorError::Subscribe`].
         pub(crate) fail_subscribe: bool,
         /// When set, `publish` fails with [`ConnectorError::Publish`].
         pub(crate) fail_publish: bool,
+        /// When set, `request` fails with [`ConnectorError::Request`].
+        pub(crate) fail_request: bool,
+        /// When set, `request` sleeps this many milliseconds before
+        /// responding.
+        pub(crate) request_delay_millis: Option<u64>,
     }
 
     impl MockConnector {
@@ -117,8 +124,24 @@ pub(crate) mod mock {
             })
         }
 
-        fn request(&self, _address: &str, value: Value) -> ConnectorFuture<'_, Value> {
-            Box::pin(async move { Ok(value) })
+        fn request(&self, address: &str, value: Value) -> ConnectorFuture<'_, Value> {
+            let address = address.to_string();
+            Box::pin(async move {
+                self.requests
+                    .lock()
+                    .unwrap()
+                    .push((address.clone(), value.clone()));
+                if let Some(millis) = self.request_delay_millis {
+                    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+                }
+                if self.fail_request {
+                    return Err(ConnectorError::Request {
+                        address,
+                        detail: "mock request failure".to_string(),
+                    });
+                }
+                Ok(value)
+            })
         }
     }
 }

@@ -69,7 +69,7 @@ impl Block for ExternalOut {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod test {
     use std::sync::Arc;
 
