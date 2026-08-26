@@ -30,6 +30,12 @@ export function save(ops: {
     if (data.label) {
       program.blocks[node.id].label = data.label;
     }
+    if (data.widget) {
+      program.blocks[node.id].widget = {
+        kind: data.widget.kind,
+        config: data.widget.config ? { ...data.widget.config } : undefined,
+      };
+    }
 
     const curProgram = program.blocks[node.id];
 
@@ -66,6 +72,143 @@ export function save(ops: {
   return program;
 }
 
+type ProgramBlock = NonNullable<Program['blocks']>[string];
+
+// Widget names from the legacy JS-block UI library (lib 'ui'), split by
+// data direction: input widgets became ExternalIn, display widgets
+// became ExternalOut.
+const LEGACY_INPUT_WIDGETS = new Set([
+  'Slider',
+  'Input',
+  'Checkbox',
+  'Button',
+  'ComboBox',
+  'Table',
+]);
+const LEGACY_DISPLAY_WIDGETS = new Set([
+  'Gauge',
+  'Chart',
+  'MultiChart',
+  'Label',
+  'Led',
+  'Bar',
+  'Display',
+]);
+
+// Extracts the widget config from a legacy block's config pins.
+function legacyConfig(
+  name: string,
+  block: ProgramBlock,
+): Record<string, unknown> | undefined {
+  const pin = (p: string) => block.inputs?.[p]?.value;
+  const out = block.outputs?.['out']?.value;
+  switch (name) {
+    case 'Slider':
+      return {
+        value: out ?? 0,
+        min: pin('min') ?? 0,
+        max: pin('max') ?? 100,
+        step: pin('step') ?? 1,
+      };
+    case 'Input':
+      return { value: out ?? '' };
+    case 'Checkbox':
+      return { value: out ?? false };
+    case 'ComboBox':
+      return {
+        items: pin('in') ?? '',
+        ...(out !== undefined ? { value: out } : {}),
+      };
+    case 'MultiChart':
+      return { series: [{ label: pin('labelA') ?? '' }] };
+    case 'Led':
+      return { label: pin('label') ?? '', color: pin('color') ?? '#3ecf6b' };
+    case 'Bar':
+      return {
+        min: pin('min') ?? 0,
+        max: pin('max') ?? 100,
+        label: pin('label') ?? '',
+      };
+    case 'Display':
+      return { unit: pin('unit') ?? '', label: pin('label') ?? '' };
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Migrate legacy UI JS-block entries (lib 'ui') in a saved program to
+ * the ExternalIn/ExternalOut + widget-metadata shape, in place, so the
+ * same program object is valid for both node building and
+ * `pushToEngine`. Links into pins that no longer exist are dropped
+ * (config pins, extra MultiChart series); the MultiChart 'a' pin is
+ * retargeted to 'in'.
+ */
+function migrateLegacyUiBlocks(program: Program) {
+  if (!program.blocks) return;
+
+  const migrated = new Map<string, 'in' | 'out'>();
+  for (const [uuid, block] of Object.entries(program.blocks)) {
+    if (block.lib !== 'ui' || block.widget) continue;
+    const name = block.name ?? '';
+    const direction = LEGACY_INPUT_WIDGETS.has(name)
+      ? 'in'
+      : LEGACY_DISPLAY_WIDGETS.has(name)
+        ? 'out'
+        : undefined;
+    if (!direction) continue;
+    migrated.set(uuid, direction);
+
+    const config = legacyConfig(name, block);
+    // The display widget's value pin; MultiChart's first series was 'a'.
+    const inPin =
+      direction === 'out'
+        ? (block.inputs?.[name === 'MultiChart' ? 'a' : 'in'] ?? undefined)
+        : undefined;
+    const outPin = direction === 'in' ? block.outputs?.['out'] : undefined;
+
+    block.widget = { kind: name, config };
+    block.name = direction === 'in' ? 'ExternalIn' : 'ExternalOut';
+    block.lib = 'core';
+    const inputs: NonNullable<ProgramBlock['inputs']> = {
+      connector: { value: 'ui', isConnected: false },
+      address: { value: uuid, isConnected: false },
+    };
+    if (inPin) {
+      inputs['in'] = {
+        ...(inPin.value != null ? { value: inPin.value } : {}),
+        isConnected: inPin.isConnected ?? false,
+      };
+    }
+    block.inputs = inputs;
+    block.outputs =
+      outPin && outPin.value != null
+        ? { out: { value: outPin.value } }
+        : undefined;
+  }
+
+  if (!migrated.size || !program.links) return;
+
+  for (const [linkId, link] of Object.entries(program.links)) {
+    let drop = false;
+
+    const targetDir = migrated.get(link.targetBlockUuid);
+    if (targetDir === 'in') {
+      // ExternalIn has no linkable input pins.
+      drop = true;
+    } else if (targetDir === 'out') {
+      if (link.targetBlockPinName === 'a') link.targetBlockPinName = 'in';
+      if (link.targetBlockPinName !== 'in') drop = true;
+    }
+
+    // The only surviving source pin on a migrated block is 'out'.
+    if (migrated.has(link.sourceBlockUuid) && link.sourceBlockPinName !== 'out')
+      drop = true;
+
+    if (drop) delete program.links[linkId];
+  }
+}
+
 /**
  * Build the UI node/edge structures from program data, synchronously.
  *
@@ -75,8 +218,12 @@ export function save(ops: {
  * change-of-value notifications from the engine — which arrive while the
  * engine is still processing the load — get dropped because the watcher
  * callback can't find the block id yet.
+ *
+ * Migrates legacy UI JS-block programs in place first, so the same
+ * (migrated) object is what later reaches `pushToEngine`.
  */
 export function prepare(program: Program): { nodes: Node[]; edges: Edge[] } {
+  migrateLegacyUiBlocks(program);
   const nodes: Node[] = [];
   const edges: Edge[] = [];
 
@@ -90,6 +237,7 @@ export function prepare(program: Program): { nodes: Node[]; edges: Edge[] } {
         name: block.name ?? '',
         lib: block.lib ?? '',
         label: block.label ?? '',
+        widget: block.widget,
         inputs: block.inputs ?? {},
         outputs: block.outputs ?? {},
       },

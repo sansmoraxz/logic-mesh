@@ -21,6 +21,7 @@
   import * as DropdownMenu from '$lib/components/ui/dropdown-menu';
   import { examplePrograms } from '$lib/Examples';
   import { useEngine } from '$lib/Engine';
+  import { setUiPushPaused } from '$lib/UiConnector';
   import type { BlockDesc, Program } from 'logic-mesh';
 
   interface Props {
@@ -68,20 +69,26 @@
   function onPauseResume() {
     if (isRunning) {
       command.pauseExecution();
+      // While paused, widget pushes only update the latest-value cache
+      // instead of piling up a backlog that would replay on resume.
+      setUiPushPaused(true);
     } else {
       command.resumeExecution();
+      setUiPushPaused(false);
     }
     isRunning = !isRunning;
   }
 
   function handleNew() {
     isRunning = true;
+    setUiPushPaused(false);
     selectedIndex = '';
     onReset();
   }
 
   function handleReset() {
     isRunning = true;
+    setUiPushPaused(false);
     onReset();
   }
 
@@ -89,6 +96,7 @@
     if (!isRunning) {
       command.resumeExecution().then(() => {
         isRunning = true;
+        setUiPushPaused(false);
         onPaste();
       });
     } else {

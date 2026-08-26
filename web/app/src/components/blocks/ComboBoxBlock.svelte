@@ -1,62 +1,64 @@
 <script lang="ts">
   import { Handle, Position } from '@xyflow/svelte';
+  import { onMount } from 'svelte';
   import * as Select from '$lib/components/ui/select';
   import { Input } from '$lib/components/ui/input';
   import { Button } from '$lib/components/ui/button';
   import { Plus } from 'lucide-svelte';
   import BlockCommons from '../BlockCommons.svelte';
-  import { useEngine } from '$lib/Engine';
   import type { Block } from '$lib/Block';
+  import { pushValue } from '$lib/UiConnector';
 
   interface Props {
     data: { value: Block };
   }
 
   let { data }: Props = $props();
-  const { command } = useEngine();
 
   const block = $derived(data.value);
-  const inputKey = $derived(Object.keys(block.inputs)[0] ?? 'in');
-  const outputKey = $derived(Object.keys(block.outputs)[0] ?? 'out');
+  const config = $derived(block.widget?.config ?? {});
 
-  let customItems: string[] = $state([]);
   let customEntry = $state('');
   let showCustomInput = $state(false);
 
-  // Items from the CSV input + any custom-added items
-  const items = $derived.by(() => {
-    const csv = String(block.inputs.in.value ?? '');
-    const fromInput = csv
+  // Items from the CSV config (custom entries are persisted into it)
+  const items = $derived(
+    String(config.items ?? '')
       .split(',')
       .map((s) => s.trim())
-      .filter(Boolean);
-    // Merge, deduplicate, keep order
-    const all = [...fromInput];
-    for (const c of customItems) {
-      if (!all.includes(c)) all.push(c);
-    }
-    return all;
-  });
+      .filter(Boolean),
+  );
 
   const selected = $derived(
-    block.outputs.out.value != null
-      ? String(block.outputs.out.value)
-      : undefined,
+    config.value != null ? String(config.value) : undefined,
   );
+
+  onMount(() => {
+    if (config.value != null) {
+      pushValue(block.id, config.value);
+    }
+  });
 
   function onSelect(value: string | undefined) {
     if (value != null) {
-      block.outputs.out.value = value;
-      command.writeBlockOutput(block.id, outputKey, value);
+      if (block.widget) {
+        block.widget.config = { ...config, value };
+      }
+      pushValue(block.id, value);
     }
   }
 
   function addCustomItem() {
     const val = customEntry.trim();
-    if (val && !items.includes(val)) {
-      customItems = [...customItems, val];
-    }
     if (val) {
+      if (!items.includes(val) && block.widget) {
+        // Persist the custom entry into the widget config so it
+        // survives save/copy.
+        block.widget.config = {
+          ...config,
+          items: [...items, val].join(','),
+        };
+      }
       onSelect(val);
     }
     customEntry = '';
@@ -76,13 +78,6 @@
 
 <BlockCommons data={block}>
   <div class="ui-block-body">
-    <Handle
-      id={inputKey}
-      type="target"
-      position={Position.Left}
-      class="handle-dot handle-input"
-    />
-
     <div class="combo-container">
       <Select.Root type="single" value={selected} onValueChange={onSelect}>
         <Select.Trigger class="h-7 w-32 text-xs">
@@ -126,7 +121,7 @@
     </div>
 
     <Handle
-      id={outputKey}
+      id="out"
       type="source"
       position={Position.Right}
       class="handle-dot handle-output"
@@ -160,9 +155,6 @@
     border-radius: 50% !important;
     min-width: 0 !important;
     border: 1.5px solid white !important;
-  }
-  :global(.handle-input) {
-    background: #6b9eff !important;
   }
   :global(.handle-output) {
     background: #6bcf7f !important;

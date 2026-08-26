@@ -12,6 +12,7 @@ The engine is compiled to WebAssembly and can be used in the browser, or in a No
 
 - Fully async and reactive
 - Extensible with custom blocks, either in Rust or JavaScript when running in a WASM environment
+- Protocol-agnostic connectors for external data — implement subscribe/publish/request in JavaScript and bind them to blocks with the generic `ExternalIn`, `ExternalOut`, and `Request` blocks
 
 ## UI Editor
 
@@ -114,4 +115,54 @@ const JsAddBlock = {
 engine.registerBlock(JsAddBlock.desc, JsAddBlock.function);
 
 engine.run();
+```
+
+### Add a custom JavaScript connector
+
+Connectors bridge the engine to external systems (MQTT, WebSockets, HTTP, …).
+A connector implements `subscribe`, `publish`, and `request` (plus optional
+`start`/`stop`); the generic `ExternalIn`/`ExternalOut`/`Request` blocks bind
+to it by connector name and address.
+
+```ts
+import { initEngine, type JsConnector } from 'logic-mesh';
+
+const engine = initEngine();
+
+const connector = {
+  subscribe(address, callback) {
+    // Push values with callback(value); report an error with
+    // callback(undefined, detail); end the stream with callback().
+    const timer = setInterval(() => callback(Math.random() * 100), 1000);
+    // Return an unsubscribe function (or a Promise of one)
+    return () => clearInterval(timer);
+  },
+  publish(address, value) {
+    console.log(`publish ${value} to ${address}`);
+  },
+  request(address, value) {
+    return Promise.resolve({ echo: value });
+  },
+} satisfies JsConnector;
+
+// Put the connector in the registry
+engine.registerConnector('demo', connector);
+
+const command = engine.engineCommand();
+
+// ExternalIn streams subscribed values into the graph via its `out` pin
+const inputId = await command.addBlock('ExternalIn');
+await command.writeBlockInput(inputId, 'connector', 'demo');
+await command.writeBlockInput(inputId, 'address', 'sensor/1');
+
+// ExternalOut publishes whatever is wired to its `in` pin
+const outputId = await command.addBlock('ExternalOut');
+await command.writeBlockInput(outputId, 'connector', 'demo');
+await command.writeBlockInput(outputId, 'address', 'actuator/1');
+
+engine.run();
+
+// Attach the connector to the running engine; the engine manages its
+// lifecycle from here (it is stopped and detached on engine reset)
+await command.addConnector('demo');
 ```

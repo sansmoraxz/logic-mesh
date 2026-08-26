@@ -26,6 +26,7 @@
     name: string;
     lib: string;
     label?: string;
+    widget?: { kind: string; config?: Record<string, unknown> };
     inputs?: Record<string, BlockPin>;
     outputs?: Record<string, BlockPin>;
   };
@@ -35,6 +36,7 @@
   import FitView from '../components/FitView.svelte';
 
   import { blockInstance } from '$lib/Block';
+  import { attachUiConnector, forgetAddress } from '$lib/UiConnector';
   import { useEngine } from '$lib/Engine';
   import { model, blockInstances } from '$lib/model.svelte';
   import { prepare, pushToEngine, save } from '$lib/Program';
@@ -56,6 +58,12 @@
     if (!engineRunning) {
       engineRunning = true;
       engine.run();
+
+      // addConnector is a message to the now-running engine;
+      // registration alone (in useEngine) does not attach.
+      attachUiConnector(engine).catch((err) =>
+        toast.error(`Failed to attach UI connector: ${err}`),
+      );
 
       startWatch((notification: BlockNotification) => {
         const blockRef = blockInstances.get(notification.id);
@@ -205,6 +213,13 @@
   async function onReset() {
     await command.resetEngine();
     model.clearAll();
+    // Reset unregisters and stops attached connectors; the UI connector
+    // must be re-registered and re-attached for widget blocks to work.
+    // `attachUiConnector` awaits a request/reply barrier so the attach
+    // is ordered after the engine has actually processed the Reset.
+    await attachUiConnector(engine).catch((err) =>
+      toast.error(`Failed to attach UI connector: ${err}`),
+    );
   }
 
   function onCopy() {
@@ -263,11 +278,20 @@
 
       const blockValue = $state(blockInstance(newId, cn.desc));
       blockValue.label = cn.label;
+      if (cn.widget) {
+        blockValue.widget = {
+          kind: cn.widget.kind,
+          config: cn.widget.config ? { ...cn.widget.config } : undefined,
+        };
+      }
 
       // Only restore values for inputs that were NOT connected upstream.
       // Connected inputs get their value from the recreated link (or
       // fall back to the block default when the source wasn't copied).
+      // A widget block's address is its own block id, so the copied
+      // address must not carry over — it is rewritten to the new id.
       for (const [name, pin] of Object.entries(cn.inputs)) {
+        if (cn.widget && name === 'address') continue;
         if (
           blockValue.inputs[name] &&
           pin.value !== undefined &&
@@ -277,6 +301,11 @@
           blockValue.inputs[name].value = pin.value;
           await command.writeBlockInput(newId, name, pin.value);
         }
+      }
+
+      if (cn.widget && blockValue.inputs['address']) {
+        blockValue.inputs['address'].value = newId;
+        await command.writeBlockInput(newId, 'address', newId);
       }
 
       const block = { value: blockValue };
@@ -361,6 +390,12 @@
       if (typeof data.label === 'string') {
         block.value.label = data.label;
       }
+      if (data.widget) {
+        block.value.widget = {
+          kind: data.widget.kind,
+          config: data.widget.config ? { ...data.widget.config } : undefined,
+        };
+      }
 
       for (const [name, input] of Object.entries(data.inputs ?? {})) {
         if (block.value.inputs[name]) {
@@ -432,6 +467,9 @@
           command.removeLink(linkId);
         }
         for (const node of deletedNodes ?? []) {
+          if (blockInstances.get(node.id)?.value.widget) {
+            forgetAddress(node.id);
+          }
           command.removeBlock(node.id);
           blockInstances.delete(node.id);
         }

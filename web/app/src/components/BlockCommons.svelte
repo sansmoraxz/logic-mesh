@@ -54,7 +54,9 @@
 >
   <div class="node-header">
     <span class="node-title-row">
-      <span class="node-title" title={data.desc.doc}>{data.desc.name}</span>
+      <span class="node-title" title={data.desc.doc}
+        >{data.widget?.kind ?? data.desc.name}</span
+      >
       {#if editing}
         <input
           bind:this={inputEl}

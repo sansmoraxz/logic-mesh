@@ -1,10 +1,11 @@
 import type { Edge, Node } from '@xyflow/svelte';
 import type { BlockDesc } from 'logic-mesh';
-import type { Block } from './Block';
+import type { Block, Widget } from './Block';
 
 interface ClipNode {
   originalId: string;
   desc: BlockDesc;
+  widget?: Widget;
   label: string;
   position: { x: number; y: number };
   inputs: Record<string, { value: unknown; isConnected: boolean }>;
@@ -46,6 +47,14 @@ export function clipboardWrite(nodes: Node[], edges: Edge[]) {
       return {
         originalId: n.id,
         desc: block.desc,
+        widget: block.widget
+          ? {
+              kind: block.widget.kind,
+              config: block.widget.config
+                ? { ...block.widget.config }
+                : undefined,
+            }
+          : undefined,
         label: block.label,
         position: { x: n.position.x, y: n.position.y },
         inputs,

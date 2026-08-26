@@ -1,11 +1,23 @@
 import type { BlockDesc, BlockPin } from 'logic-mesh';
 
 /**
+ * UI widget identity carried by ExternalIn/ExternalOut blocks that
+ * were placed as widgets. `kind` picks the component; `config` holds
+ * widget-local settings (min/max/label/...).
+ */
+export interface Widget {
+  kind: string;
+  config?: Record<string, unknown>;
+}
+
+/**
  * A block instance.
  */
 export interface Block {
   id: string;
   desc: BlockDesc;
+  /** Widget identity, present only on widget-backed external blocks. */
+  widget?: Widget;
   /** Optional user label shown next to the block-type name. */
   label: string;
   inputs: { [key: string]: BlockPin };

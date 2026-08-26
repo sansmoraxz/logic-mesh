@@ -5,7 +5,8 @@ import type {
   EngineCommand,
 } from 'logic-mesh';
 import { initEngine } from 'logic-mesh';
-import { registerBlocks } from './JsBlocks';
+import { registerUiConnector } from './UiConnector';
+import { widgetBlockDescs } from './Widgets';
 
 let engine: BlocksEngine;
 let blocks: BlockDesc[];
@@ -14,8 +15,8 @@ let command: EngineCommand;
 export function useEngine() {
   if (!engine) {
     engine = initEngine();
-    registerBlocks(engine);
-    blocks = engine.listBlocks();
+    registerUiConnector(engine);
+    blocks = [...engine.listBlocks(), ...widgetBlockDescs];
     command = engine.engineCommand();
   }
 
