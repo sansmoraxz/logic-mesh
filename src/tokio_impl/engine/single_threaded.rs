@@ -334,7 +334,7 @@ mod tests {
             let engine_sender = eng.create_message_channel(channel_id, sender);
 
             let driver_mock = mock.clone();
-            thread::spawn(move || {
+            let driver = thread::spawn(move || {
                 let rt = Runtime::new().expect("RT");
                 let handle = rt.spawn(async move {
                     // Wait for the block to open its subscription.
@@ -346,16 +346,25 @@ mod tests {
                     }
 
                     driver_mock.feed("sensor", Ok(21.into()));
-                    sleep(Duration::from_millis(500)).await;
 
-                    let _ = engine_sender
-                        .send(InspectBlockReq(channel_id, add_uuid))
-                        .await;
-                    match receiver.recv().await {
-                        Some(InspectBlockRes(Ok(data))) => {
-                            assert_eq!(data.outputs["out"].val, 21.into());
+                    // Poll until the value has propagated through the
+                    // pin graph into the Add block's output.
+                    let mut tries = 0;
+                    loop {
+                        let _ = engine_sender
+                            .send(InspectBlockReq(channel_id, add_uuid))
+                            .await;
+                        match receiver.recv().await {
+                            Some(InspectBlockRes(Ok(data))) => {
+                                if data.outputs["out"].val == 21.into() {
+                                    break;
+                                }
+                            }
+                            other => panic!("Expected InspectBlockRes(Ok), got {:?}", other),
                         }
-                        other => panic!("Expected InspectBlockRes(Ok), got {:?}", other),
+                        tries += 1;
+                        assert!(tries < 100, "value never reached the Add output");
+                        sleep(Duration::from_millis(50)).await;
                     }
 
                     let _ = engine_sender.send(Shutdown).await;
@@ -366,6 +375,10 @@ mod tests {
             eng.schedule(ext).unwrap();
             eng.schedule(add).unwrap();
             eng.run().await;
+
+            // Propagate any driver-side panic so assertion failures
+            // fail the test instead of vanishing with the thread.
+            driver.join().unwrap().unwrap();
 
             unregister_connector(&name);
         }
@@ -393,13 +406,21 @@ mod tests {
 
         impl Connector for FlagConnector {
             fn start(&self) -> ConnectorFuture<'_, ()> {
-                self.started.store(true, Ordering::SeqCst);
-                Box::pin(async { Ok(()) })
+                // Flag inside the future — the test then proves the
+                // engine actually awaited it, not just created it.
+                let started = self.started.clone();
+                Box::pin(async move {
+                    started.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
             }
 
             fn stop(&self) -> ConnectorFuture<'_, ()> {
-                self.stopped.store(true, Ordering::SeqCst);
-                Box::pin(async { Ok(()) })
+                let stopped = self.stopped.clone();
+                Box::pin(async move {
+                    stopped.store(true, Ordering::SeqCst);
+                    Ok(())
+                })
             }
 
             fn subscribe(&self, _address: &str) -> ConnectorFuture<'_, ValueStream> {
@@ -461,7 +482,7 @@ mod tests {
             let (sender, _receiver) = mpsc::channel(32);
             let engine_sender = eng.create_message_channel(Uuid::new_v4(), sender);
 
-            thread::spawn(move || {
+            let driver = thread::spawn(move || {
                 let rt = Runtime::new().expect("RT");
                 let handle = rt.spawn(async move {
                     sleep(Duration::from_millis(100)).await;
@@ -471,6 +492,7 @@ mod tests {
             });
 
             eng.run().await;
+            driver.join().unwrap().unwrap();
 
             assert!(started.load(Ordering::SeqCst), "start driven by run()");
             assert!(stopped.load(Ordering::SeqCst), "stop driven on shutdown");
@@ -488,7 +510,7 @@ mod tests {
             let (sender, _receiver) = mpsc::channel(32);
             let engine_sender = eng.create_message_channel(Uuid::new_v4(), sender);
 
-            thread::spawn(move || {
+            let driver = thread::spawn(move || {
                 let rt = Runtime::new().expect("RT");
                 let handle = rt.spawn(async move {
                     sleep(Duration::from_millis(100)).await;
@@ -499,6 +521,7 @@ mod tests {
             });
 
             eng.run().await;
+            driver.join().unwrap().unwrap();
 
             assert!(started.load(Ordering::SeqCst), "start driven by run()");
             assert!(stopped.load(Ordering::SeqCst), "stop driven on reset");

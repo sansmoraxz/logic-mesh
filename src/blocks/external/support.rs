@@ -65,6 +65,9 @@ pub(crate) mod mock {
         pub(crate) fail_subscribe: bool,
         /// When set, `publish` fails with [`ConnectorError::Publish`].
         pub(crate) fail_publish: bool,
+        /// When set, `publish` sleeps this many milliseconds before
+        /// recording and acknowledging the value.
+        pub(crate) publish_delay_millis: Option<u64>,
         /// When set, `request` fails with [`ConnectorError::Request`].
         pub(crate) fail_request: bool,
         /// When set, `request` sleeps this many milliseconds before
@@ -113,6 +116,9 @@ pub(crate) mod mock {
         fn publish(&self, address: &str, value: Value) -> ConnectorFuture<'_, ()> {
             let address = address.to_string();
             Box::pin(async move {
+                if let Some(millis) = self.publish_delay_millis {
+                    tokio::time::sleep(std::time::Duration::from_millis(millis)).await;
+                }
                 if self.fail_publish {
                     return Err(ConnectorError::Publish {
                         address,

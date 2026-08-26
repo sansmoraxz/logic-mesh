@@ -26,8 +26,11 @@ use crate::{blocks::InputImpl, blocks::OutputImpl};
 /// the address on the `address` pin. Every value the subscription
 /// yields is set on `out`. Changing either pin drops the current
 /// subscription — which ends it — and opens a new one; the block
-/// faults when the connector is missing, the subscribe fails, or the
-/// stream yields an error.
+/// faults when the connector is missing, the subscribe fails, the
+/// stream yields an error, or the stream ends. A stream ended by a
+/// connector stop is re-subscribed automatically on the next cycle
+/// (throttled by the polling interval), so the block recovers by
+/// itself after the connector restarts.
 #[block]
 #[derive(BlockProps, Debug)]
 #[category = "external"]
@@ -109,9 +112,13 @@ impl Block for ExternalIn {
                     self.set_state(BlockState::fault(format!("ExternalIn: {err}")));
                 }
                 None => {
-                    // Stream ended — drop the binding so the next cycle
-                    // re-subscribes.
+                    // Stream ended — fault for visibility and drop the
+                    // binding so the next cycle re-subscribes (the
+                    // polling-interval wait throttles the retries).
                     self.subscription = None;
+                    self.set_state(BlockState::fault(
+                        "ExternalIn: subscription ended".to_string(),
+                    ));
                 }
             },
             _ = sleep_millis(poll) => {}

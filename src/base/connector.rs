@@ -113,12 +113,22 @@ pub type ConnectorFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Connecto
 pub trait Connector: Send + Sync {
     /// Establishes the connector's transport. Called by the engine when
     /// it starts running. The default does nothing.
+    ///
+    /// Implementations must support a restart: after an engine shutdown
+    /// the connector stays registered, and re-running the engine calls
+    /// `start` again on the already-[`stop`](Connector::stop)ped
+    /// connector.
     fn start(&self) -> ConnectorFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
 
     /// Winds down the connector's transport. Called by the engine on
     /// shutdown and reset. The default does nothing.
+    ///
+    /// Blocks may still hold subscription streams from before the stop,
+    /// so implementations should end every outstanding stream (yield
+    /// [`None`]) when stopping — stream holders then observe the
+    /// termination and re-subscribe after a restart.
     fn stop(&self) -> ConnectorFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
@@ -158,12 +168,22 @@ pub trait Connector: Send + Sync {
 pub trait Connector {
     /// Establishes the connector's transport. Called by the engine when
     /// it starts running. The default does nothing.
+    ///
+    /// Implementations must support a restart: after an engine shutdown
+    /// the connector stays registered, and re-running the engine calls
+    /// `start` again on the already-[`stop`](Connector::stop)ped
+    /// connector.
     fn start(&self) -> ConnectorFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
 
     /// Winds down the connector's transport. Called by the engine on
     /// shutdown and reset. The default does nothing.
+    ///
+    /// Blocks may still hold subscription streams from before the stop,
+    /// so implementations should end every outstanding stream (yield
+    /// [`None`]) when stopping — stream holders then observe the
+    /// termination and re-subscribe after a restart.
     fn stop(&self) -> ConnectorFuture<'_, ()> {
         Box::pin(async { Ok(()) })
     }
