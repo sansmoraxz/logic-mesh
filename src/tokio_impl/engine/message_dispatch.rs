@@ -180,6 +180,27 @@ pub(super) async fn dispatch_message(engine: &mut SingleThreadedEngine, msg: Mes
             reply_to_sender(engine, sender_uuid, EngineMessage::RemoveLinkRes(res));
         }
 
+        EngineMessage::AddConnectorReq(sender_uuid, name) => {
+            log::debug!("AddConnectorReq: {name}");
+
+            let res = engine.attach_connector(name).await;
+            reply_to_sender(engine, sender_uuid, EngineMessage::AddConnectorRes(res));
+        }
+
+        EngineMessage::RemoveConnectorReq(sender_uuid, name) => {
+            log::debug!("RemoveConnectorReq: {name}");
+
+            let res = engine.detach_connector(&name).await;
+            reply_to_sender(engine, sender_uuid, EngineMessage::RemoveConnectorRes(res));
+        }
+
+        EngineMessage::ListConnectorsReq(sender_uuid) => {
+            log::debug!("ListConnectorsReq");
+
+            let res = Ok(engine.connector_names());
+            reply_to_sender(engine, sender_uuid, EngineMessage::ListConnectorsRes(res));
+        }
+
         _ => unreachable!("Invalid message"),
     }
 }

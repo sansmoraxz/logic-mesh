@@ -199,16 +199,67 @@ pub trait Connector {
     fn request(&self, address: &str, value: Value) -> ConnectorFuture<'_, Value>;
 }
 
-/// A shared handle to a registered [`Connector`].
+/// The shared-ownership pointer a [`ConnectorHandle`] wraps:
+/// [`std::sync::Arc`] natively, [`std::rc::Rc`] on `wasm32` (the
+/// single-threaded host never sends handles across threads).
 #[cfg(not(target_arch = "wasm32"))]
-pub type ConnectorHandle = std::sync::Arc<dyn Connector>;
+type HandleRepr = std::sync::Arc<dyn Connector>;
 
-/// A shared handle to a registered [`Connector`].
-///
-/// Uses [`std::rc::Rc`] on `wasm32`, as the single-threaded host never
-/// sends handles across threads.
+/// The shared-ownership pointer a [`ConnectorHandle`] wraps:
+/// [`std::sync::Arc`] natively, [`std::rc::Rc`] on `wasm32` (the
+/// single-threaded host never sends handles across threads).
 #[cfg(target_arch = "wasm32")]
-pub type ConnectorHandle = std::rc::Rc<dyn Connector>;
+type HandleRepr = std::rc::Rc<dyn Connector>;
+
+/// A shared, cheaply-cloneable handle to a registered [`Connector`].
+///
+/// The handle owns the connector behind the target's shared-ownership
+/// pointer — `Arc` natively, `Rc` on `wasm32` — chosen in exactly one
+/// place, so call sites never name it and a change of threading model
+/// touches only this type. Build one with [`ConnectorHandle::new`];
+/// the handle dereferences to the trait, so connector operations are
+/// called on it directly.
+#[derive(Clone)]
+pub struct ConnectorHandle(HandleRepr);
+
+impl ConnectorHandle {
+    /// Wraps `connector` in a new shared handle.
+    pub fn new(connector: impl Connector + 'static) -> Self {
+        #[cfg(not(target_arch = "wasm32"))]
+        return Self(std::sync::Arc::new(connector));
+
+        #[cfg(target_arch = "wasm32")]
+        Self(std::rc::Rc::new(connector))
+    }
+}
+
+impl std::ops::Deref for ConnectorHandle {
+    type Target = dyn Connector;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+/// For callers that keep shared access to the concrete connector —
+/// e.g. a test poking at the connector while a handle to it is
+/// registered.
+#[cfg(not(target_arch = "wasm32"))]
+impl<T: Connector + 'static> From<std::sync::Arc<T>> for ConnectorHandle {
+    fn from(connector: std::sync::Arc<T>) -> Self {
+        Self(connector)
+    }
+}
+
+/// For callers that keep shared access to the concrete connector —
+/// e.g. a test poking at the connector while a handle to it is
+/// registered.
+#[cfg(target_arch = "wasm32")]
+impl<T: Connector + 'static> From<std::rc::Rc<T>> for ConnectorHandle {
+    fn from(connector: std::rc::Rc<T>) -> Self {
+        Self(connector)
+    }
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 static CONNECTORS: std::sync::LazyLock<std::sync::RwLock<HashMap<String, ConnectorHandle>>> =
@@ -227,7 +278,11 @@ thread_local! {
 ///
 /// Returns [`ConnectorError::AlreadyRegistered`] if a connector with
 /// this name exists.
-pub fn register_connector(name: &str, handle: ConnectorHandle) -> Result<(), ConnectorError> {
+pub fn register_connector(
+    name: &str,
+    handle: impl Into<ConnectorHandle>,
+) -> Result<(), ConnectorError> {
+    let handle = handle.into();
     let insert = |map: &mut HashMap<String, ConnectorHandle>| {
         if map.contains_key(name) {
             return Err(ConnectorError::AlreadyRegistered {
@@ -314,10 +369,7 @@ mod test {
     }
 
     fn handle() -> ConnectorHandle {
-        #[cfg(not(target_arch = "wasm32"))]
-        return std::sync::Arc::new(NoopConnector);
-        #[cfg(target_arch = "wasm32")]
-        std::rc::Rc::new(NoopConnector)
+        ConnectorHandle::new(NoopConnector)
     }
 
     #[test]

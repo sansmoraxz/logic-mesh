@@ -391,50 +391,14 @@ mod tests {
         };
 
         use super::*;
-        use crate::base::connector::{
-            Connector, ConnectorFuture, ValueStream, get_connector, unregister_connector,
+        use crate::base::connector::{get_connector, register_connector, unregister_connector};
+        use crate::base::engine::messages::EngineMessage::{
+            AddConnectorReq, AddConnectorRes, ListConnectorsReq, ListConnectorsRes,
+            RemoveConnectorReq, RemoveConnectorRes, Reset,
         };
-        use crate::base::engine::messages::EngineMessage::Reset;
-        use libhaystack::val::Value;
-
-        /// Records `start`/`stop` calls so tests can observe the engine
-        /// driving the lifecycle.
-        struct FlagConnector {
-            started: Arc<AtomicBool>,
-            stopped: Arc<AtomicBool>,
-        }
-
-        impl Connector for FlagConnector {
-            fn start(&self) -> ConnectorFuture<'_, ()> {
-                // Flag inside the future — the test then proves the
-                // engine actually awaited it, not just created it.
-                let started = self.started.clone();
-                Box::pin(async move {
-                    started.store(true, Ordering::SeqCst);
-                    Ok(())
-                })
-            }
-
-            fn stop(&self) -> ConnectorFuture<'_, ()> {
-                let stopped = self.stopped.clone();
-                Box::pin(async move {
-                    stopped.store(true, Ordering::SeqCst);
-                    Ok(())
-                })
-            }
-
-            fn subscribe(&self, _address: &str) -> ConnectorFuture<'_, ValueStream> {
-                Box::pin(async { Ok(Box::pin(futures::stream::empty()) as ValueStream) })
-            }
-
-            fn publish(&self, _address: &str, _value: Value) -> ConnectorFuture<'_, ()> {
-                Box::pin(async { Ok(()) })
-            }
-
-            fn request(&self, _address: &str, value: Value) -> ConnectorFuture<'_, Value> {
-                Box::pin(async move { Ok(value) })
-            }
-        }
+        use crate::tokio_impl::engine::connectors::test_support::{
+            FailingStartConnector, FlagConnector,
+        };
 
         /// The connector registry is process-global and tests run in
         /// parallel, so every test uses a unique name.
@@ -529,6 +493,223 @@ mod tests {
                 get_connector(&name).is_none(),
                 "reset unregisters the connector"
             );
+        }
+
+        /// A connector registered globally while the engine is running
+        /// can be attached, listed, and detached over the message
+        /// channel.
+        #[tokio::test(flavor = "current_thread")]
+        async fn dynamic_add_list_remove_over_messages() {
+            let name = format!("dynamic-{}", Uuid::new_v4());
+            let started = Arc::new(AtomicBool::new(false));
+            let stopped = Arc::new(AtomicBool::new(false));
+
+            // Registered globally, NOT engine-managed yet — attaching
+            // over the message channel is what puts it under
+            // engine management.
+            register_connector(
+                &name,
+                Arc::new(FlagConnector {
+                    started: started.clone(),
+                    stopped: stopped.clone(),
+                }),
+            )
+            .expect("registered");
+
+            let mut eng = SingleThreadedEngine::new();
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_name = name.clone();
+            let driver_started = started.clone();
+            let driver_stopped = stopped.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    sleep(Duration::from_millis(100)).await;
+
+                    let _ = engine_sender
+                        .send(AddConnectorReq(channel_id, driver_name.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(AddConnectorRes(Ok(added))) => assert_eq!(added, driver_name),
+                        other => panic!("Expected AddConnectorRes(Ok), got {:?}", other),
+                    }
+                    assert!(
+                        driver_started.load(Ordering::SeqCst),
+                        "attach awaits the connector's start"
+                    );
+
+                    let _ = engine_sender.send(ListConnectorsReq(channel_id)).await;
+                    match receiver.recv().await {
+                        Some(ListConnectorsRes(Ok(names))) => {
+                            assert!(names.contains(&driver_name), "attached name is listed")
+                        }
+                        other => panic!("Expected ListConnectorsRes(Ok), got {:?}", other),
+                    }
+
+                    let _ = engine_sender
+                        .send(RemoveConnectorReq(channel_id, driver_name.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(RemoveConnectorRes(Ok(removed))) => assert_eq!(removed, driver_name),
+                        other => panic!("Expected RemoveConnectorRes(Ok), got {:?}", other),
+                    }
+                    assert!(
+                        driver_stopped.load(Ordering::SeqCst),
+                        "detach awaits the connector's stop"
+                    );
+                    assert!(
+                        get_connector(&driver_name).is_none(),
+                        "detach unregisters the connector"
+                    );
+
+                    let _ = engine_sender.send(ListConnectorsReq(channel_id)).await;
+                    match receiver.recv().await {
+                        Some(ListConnectorsRes(Ok(names))) => {
+                            assert!(!names.contains(&driver_name), "detached name is not listed")
+                        }
+                        other => panic!("Expected ListConnectorsRes(Ok), got {:?}", other),
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+        }
+
+        /// A failed attach must not leak a partially-started connector:
+        /// `start` may have spawned IO tasks before erroring, so the
+        /// engine stops the handle before reporting the error. The
+        /// name stays registered so a retry remains possible.
+        #[tokio::test(flavor = "current_thread")]
+        async fn failed_attach_stops_the_connector() {
+            let name = format!("failing-start-{}", Uuid::new_v4());
+            let stopped = Arc::new(AtomicBool::new(false));
+            register_connector(
+                &name,
+                Arc::new(FailingStartConnector {
+                    stopped: stopped.clone(),
+                }),
+            )
+            .expect("registered");
+
+            let mut eng = SingleThreadedEngine::new();
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_name = name.clone();
+            let driver_stopped = stopped.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    sleep(Duration::from_millis(100)).await;
+
+                    let _ = engine_sender
+                        .send(AddConnectorReq(channel_id, driver_name.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(AddConnectorRes(Err(_))) => {}
+                        other => panic!(
+                            "Expected AddConnectorRes(Err) on start failure, got {:?}",
+                            other
+                        ),
+                    }
+                    assert!(
+                        driver_stopped.load(Ordering::SeqCst),
+                        "failed attach stops the connector before replying"
+                    );
+                    assert!(
+                        get_connector(&driver_name).is_some(),
+                        "failed attach keeps the connector registered for a retry"
+                    );
+
+                    let _ = engine_sender.send(ListConnectorsReq(channel_id)).await;
+                    match receiver.recv().await {
+                        Some(ListConnectorsRes(Ok(names))) => {
+                            assert!(
+                                !names.contains(&driver_name),
+                                "failed attach is not tracked"
+                            )
+                        }
+                        other => panic!("Expected ListConnectorsRes(Ok), got {:?}", other),
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+
+            unregister_connector(&name);
+        }
+
+        /// Attach/detach error cases: an unregistered name, a name the
+        /// engine already manages, and detaching an unmanaged name.
+        #[tokio::test(flavor = "current_thread")]
+        async fn dynamic_add_remove_error_cases() {
+            let (name, _, _, mut eng) = setup("dynamic-errors");
+
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_name = name.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    sleep(Duration::from_millis(100)).await;
+
+                    let missing = format!("missing-{}", Uuid::new_v4());
+                    let _ = engine_sender
+                        .send(AddConnectorReq(channel_id, missing.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(AddConnectorRes(Err(_))) => {}
+                        other => panic!(
+                            "Expected AddConnectorRes(Err) for an unregistered name, got {:?}",
+                            other
+                        ),
+                    }
+
+                    let _ = engine_sender
+                        .send(AddConnectorReq(channel_id, driver_name.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(AddConnectorRes(Err(_))) => {}
+                        other => panic!(
+                            "Expected AddConnectorRes(Err) for an already-managed name, got {:?}",
+                            other
+                        ),
+                    }
+
+                    let _ = engine_sender
+                        .send(RemoveConnectorReq(channel_id, missing))
+                        .await;
+                    match receiver.recv().await {
+                        Some(RemoveConnectorRes(Err(_))) => {}
+                        other => panic!(
+                            "Expected RemoveConnectorRes(Err) for an unmanaged name, got {:?}",
+                            other
+                        ),
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+
+            unregister_connector(&name);
         }
     }
 }

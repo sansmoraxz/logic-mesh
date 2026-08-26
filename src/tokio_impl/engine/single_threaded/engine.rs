@@ -19,10 +19,9 @@ use uuid::Uuid;
 use super::super::block_mailbox::{
     BLOCK_MAILBOX_CAP, BlockMailboxCmd, mailbox_request, mailbox_send,
 };
+use super::super::connectors;
 use super::actor::block_actor_task;
-use crate::base::connector::{
-    ConnectorHandle, get_connector, register_connector, unregister_connector,
-};
+use crate::base::connector::{ConnectorHandle, register_connector};
 use crate::base::{
     block::{Block, BlockDesc},
     engine::{
@@ -37,7 +36,6 @@ use crate::base::{
 use crate::blocks::registry::{CORE_LIB, get_block};
 use crate::tokio_impl::engine::message_dispatch::dispatch_message;
 use crate::tokio_impl::engine::schedule_block_on_engine;
-use crate::tokio_impl::sleep::sleep_millis;
 use crate::tokio_impl::{ReaderImpl, WriterImpl};
 
 /// Concrete engine-message type.
@@ -46,11 +44,6 @@ use crate::tokio_impl::{ReaderImpl, WriterImpl};
 /// `create_watch` for the rationale (fault notifications must not drop
 /// under burst load).
 pub type Messages = EngineMessage<UnboundedSender<WatchMessage>>;
-
-/// Deadline for a connector `start`/`stop` await, in milliseconds. A
-/// connector that blows through it is logged and skipped, so a hung
-/// implementation cannot wedge `run()`, shutdown, or reset.
-const CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS: u64 = 5000;
 
 /// Engine-side handle for a scheduled block.
 ///
@@ -178,9 +171,7 @@ impl Drop for SingleThreadedEngine {
     /// their IO tasks and wind those down from their own `Drop` once
     /// the registry releases the last handle.
     fn drop(&mut self) {
-        for name in std::mem::take(&mut self.connectors) {
-            unregister_connector(&name);
-        }
+        connectors::unregister_connectors(&mut self.connectors);
     }
 }
 
@@ -253,7 +244,7 @@ impl Engine for SingleThreadedEngine {
         // connector that has not started yet. A plain await makes no
         // progress on the LocalSet, so every connector is started
         // before any actor runs.
-        self.start_connectors().await;
+        connectors::start_connectors(&self.connectors).await;
 
         // Process any links queued during configuration.
         let pending_links = std::mem::take(&mut self.pending_links);
@@ -278,7 +269,7 @@ impl Engine for SingleThreadedEngine {
                 if matches!(message, EngineMessage::Shutdown) {
                     // Connectors stay registered so the engine can be
                     // re-run with the same bindings.
-                    self.stop_connectors().await;
+                    connectors::stop_connectors(&self.connectors).await;
                     break;
                 } else if matches!(message, EngineMessage::Reset) {
                     let ids: Vec<Uuid> = self.handles.keys().copied().collect();
@@ -290,16 +281,7 @@ impl Engine for SingleThreadedEngine {
                     // Unregister first — no block can `get_connector` a
                     // connector that is being stopped — then stop the
                     // handles the unregistration handed back.
-                    let handles: Vec<(String, ConnectorHandle)> =
-                        std::mem::take(&mut self.connectors)
-                            .into_iter()
-                            .filter_map(|name| {
-                                unregister_connector(&name).map(|handle| (name, handle))
-                            })
-                            .collect();
-                    for (name, handle) in handles {
-                        Self::stop_connector(&name, &handle).await;
-                    }
+                    connectors::unregister_and_stop_connectors(&mut self.connectors).await;
                     continue;
                 } else if matches!(message, EngineMessage::Pause) {
                     is_paused = true;
@@ -360,68 +342,63 @@ impl SingleThreadedEngine {
     ///
     /// Returns an error if a connector with this name is already
     /// registered.
-    pub fn add_connector(&mut self, name: &str, handle: ConnectorHandle) -> Result<()> {
+    pub fn add_connector(&mut self, name: &str, handle: impl Into<ConnectorHandle>) -> Result<()> {
         register_connector(name, handle)?;
         self.connectors.push(name.to_string());
         Ok(())
     }
 
-    /// Awaits `start` for every engine-managed connector. Awaited
-    /// directly — not via the [`LocalSet`] — so no block actor makes
-    /// progress until every connector has started. Failures and
-    /// timeouts are logged and skipped.
-    async fn start_connectors(&self) {
-        for name in &self.connectors {
-            let Some(handle) = get_connector(name) else {
-                log::error!("Connector '{name}' is engine-managed but not registered");
-                continue;
-            };
-            tokio::select! {
-                result = handle.start() => {
-                    if let Err(err) = result {
-                        log::error!("Connector '{name}' failed to start: {err}");
-                    }
-                }
-                _ = sleep_millis(CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS) => {
-                    log::error!(
-                        "Connector '{name}' did not start within \
-                         {CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS} ms"
-                    );
-                }
-            }
-        }
+    /// Attaches an already-registered connector to this running engine:
+    /// resolves `name` in the process-wide connector registry, awaits
+    /// the connector's `start` (bounded by the lifecycle timeout), and
+    /// puts it under this engine's lifecycle management.
+    ///
+    /// This is the running-phase counterpart of
+    /// [`add_connector`](Self::add_connector), reachable over the
+    /// engine message channel
+    /// ([`AddConnectorReq`](EngineMessage::AddConnectorReq)). Handles
+    /// cannot ride in engine messages, so callers register the handle
+    /// first and attach it here by name.
+    ///
+    /// A registered connector must be attached to at most one engine:
+    /// the registry carries no ownership mark, so a second engine
+    /// attaching the same name would double-start the connector and
+    /// its reset would unregister the name out from under the first
+    /// engine.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if the name is not registered, is
+    /// already engine-managed, or the connector fails to start (or
+    /// times out). On a start failure the connector's `stop` is
+    /// awaited before returning — a failing `start` may have spawned
+    /// IO tasks before erroring (or completed after the timeout
+    /// cancelled the await), and nothing else would ever stop an
+    /// untracked connector. The name stays registered, so a retry
+    /// remains possible.
+    pub(crate) async fn attach_connector(&mut self, name: String) -> Result<String, String> {
+        connectors::attach_connector(&mut self.connectors, name).await
     }
 
-    /// Awaits `stop` for every engine-managed connector. Awaited
-    /// directly — connectors own their IO tasks on the ambient runtime,
-    /// so their `stop` never needs the [`LocalSet`] to progress.
-    /// Failures and timeouts are logged and skipped.
-    async fn stop_connectors(&self) {
-        for name in &self.connectors {
-            let Some(handle) = get_connector(name) else {
-                continue;
-            };
-            Self::stop_connector(name, &handle).await;
-        }
+    /// Detaches an engine-managed connector: stops tracking it,
+    /// unregisters it from the process-wide registry, and then awaits
+    /// its `stop` — the same ordering as a reset, so no block can
+    /// resolve a connector that is being stopped. Stop failures and
+    /// timeouts are logged, not fatal.
+    ///
+    /// Reachable over the engine message channel
+    /// ([`RemoveConnectorReq`](EngineMessage::RemoveConnectorReq)).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error message if `name` is not engine-managed.
+    pub(crate) async fn detach_connector(&mut self, name: &str) -> Result<String, String> {
+        connectors::detach_connector(&mut self.connectors, name).await
     }
 
-    /// Awaits `stop` on one connector handle, bounded by
-    /// [`CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS`] so a hung connector cannot
-    /// wedge shutdown or reset. Failures and timeouts are logged.
-    async fn stop_connector(name: &str, handle: &ConnectorHandle) {
-        tokio::select! {
-            result = handle.stop() => {
-                if let Err(err) = result {
-                    log::error!("Connector '{name}' failed to stop: {err}");
-                }
-            }
-            _ = sleep_millis(CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS) => {
-                log::error!(
-                    "Connector '{name}' did not stop within \
-                     {CONNECTOR_LIFECYCLE_TIMEOUT_MILLIS} ms"
-                );
-            }
-        }
+    /// The names of the connectors this engine manages.
+    pub fn connector_names(&self) -> Vec<String> {
+        self.connectors.clone()
     }
 
     /// Returns sync metadata handles for every scheduled block. Use the
