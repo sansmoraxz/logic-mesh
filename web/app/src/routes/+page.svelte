@@ -40,7 +40,7 @@
   import ToolBar from '../components/ToolBar.svelte';
   import FitView from '../components/FitView.svelte';
 
-  import { blockInstance } from '$lib/Block';
+  import { blockInstance, cloneWidget } from '$lib/Block';
   import { attachUiConnector, forgetBlockAddress } from '$lib/UiConnector';
   import { useEngine } from '$lib/Engine';
   import { model, blockInstances } from '$lib/model.svelte';
@@ -51,7 +51,7 @@
     clipboardWrite,
   } from '$lib/Clipboard';
 
-  const { engine, blocks, command, startWatch } = useEngine();
+  const { engine, blocks, command, connectorCommand, startWatch } = useEngine();
 
   const nodeTypes = { custom: BlockNode };
 
@@ -65,8 +65,10 @@
       engine.run();
 
       // addConnector is a message to the now-running engine;
-      // registration alone (in useEngine) does not attach.
-      attachUiConnector(engine).catch((err) =>
+      // registration alone (in useEngine) does not attach. Attach uses
+      // the pre-run `connectorCommand` handle — engine methods are off
+      // limits from continuations once run() has been polled.
+      attachUiConnector(connectorCommand).catch((err) =>
         toast.error(`Failed to attach UI connector: ${err}`),
       );
 
@@ -222,7 +224,7 @@
     // must be re-registered and re-attached for widget blocks to work.
     // `attachUiConnector` awaits a request/reply barrier so the attach
     // is ordered after the engine has actually processed the Reset.
-    await attachUiConnector(engine).catch((err) =>
+    await attachUiConnector(connectorCommand).catch((err) =>
       toast.error(`Failed to attach UI connector: ${err}`),
     );
   }
@@ -284,17 +286,10 @@
       const blockValue = $state(blockInstance(newId, cn.desc));
       blockValue.label = cn.label;
       if (cn.widget) {
-        blockValue.widget = {
-          kind: cn.widget.kind,
-          config: cn.widget.config ? { ...cn.widget.config } : undefined,
-          // Source addresses reference other (plain ExternalOut) blocks
-          // — like MultiChart series addresses inside `config` — so
-          // they are carried over verbatim, not rewritten.
-          configSources: cn.widget.configSources
-            ? { ...cn.widget.configSources }
-            : undefined,
-          valueSource: cn.widget.valueSource,
-        };
+        // Source addresses reference other (plain ExternalOut) blocks
+        // — like MultiChart series addresses inside `config` — so
+        // they are carried over verbatim, not rewritten.
+        blockValue.widget = cloneWidget(cn.widget);
       }
 
       // Only restore values for inputs that were NOT connected upstream.
@@ -381,7 +376,20 @@
     // processing the load — get dropped by the watcher callback
     // (`blockInstances.get(id)` returns undefined).
     const prog = program as Program;
-    let { nodes: newNodes, edges: newEdges } = prepare(prog);
+    let { nodes: newNodes, edges: newEdges, migration } = prepare(prog);
+
+    // Surface what the legacy migration did. Anything dropped is data
+    // loss and gets its own warning; conversions are folded into one
+    // informational toast so loading an old program isn't a toast
+    // storm.
+    for (const dropped of migration.dropped) {
+      toast.warning(dropped);
+    }
+    if (migration.converted.length) {
+      toast.info(
+        `Migrated legacy program: ${migration.converted.join('; ')}`,
+      );
+    }
 
     newNodes = newNodes.map((node) => {
       const data = node.data as ProgramNodeData;
@@ -403,14 +411,7 @@
         block.value.label = data.label;
       }
       if (data.widget) {
-        block.value.widget = {
-          kind: data.widget.kind,
-          config: data.widget.config ? { ...data.widget.config } : undefined,
-          configSources: data.widget.configSources
-            ? { ...data.widget.configSources }
-            : undefined,
-          valueSource: data.widget.valueSource,
-        };
+        block.value.widget = cloneWidget(data.widget);
       }
 
       for (const [name, input] of Object.entries(data.inputs ?? {})) {

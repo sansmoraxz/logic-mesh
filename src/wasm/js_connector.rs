@@ -135,7 +135,7 @@ use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen_futures::JsFuture;
 
 use crate::base::connector::{
-    Connector, ConnectorFuture, ConnectorHandle, ValueStream, register_connector,
+    Connector, ConnectorFuture, ConnectorHandle, ValueStream, get_connector, register_connector,
     unregister_connector,
 };
 use crate::base::error::ConnectorError;
@@ -314,6 +314,22 @@ pub fn register_js_connector(name: String, connector: JsValue) -> Result<(), Str
 #[wasm_bindgen(js_name = "unregisterConnector")]
 pub fn unregister_js_connector(name: String) -> bool {
     unregister_connector(&name).is_some()
+}
+
+/// Reports whether a connector is registered under `name` in the
+/// process-wide connector registry.
+///
+/// Lets JS distinguish "not yet registered" from "registered but
+/// stale" (e.g. a registry entry that outlived a module re-init)
+/// without attempting a registration just to catch the
+/// already-registered error — [`registerConnector`](register_js_connector)
+/// rejects duplicates, and the registry lives for the process, not the
+/// module.
+///
+/// Exported to JS as `connectorRegistered`.
+#[wasm_bindgen(js_name = "connectorRegistered")]
+pub fn js_connector_registered(name: String) -> bool {
+    get_connector(&name).is_some()
 }
 
 /// The stream a [`JsConnector`] subscription produces.

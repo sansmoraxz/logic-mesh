@@ -1,7 +1,7 @@
 import type { Edge, Node } from '@xyflow/svelte';
 import type { BlockDesc } from 'logic-mesh';
 import { SvelteMap } from 'svelte/reactivity';
-import { blockInstance, type Block } from './Block';
+import { blockInstance, cloneWidget, type Block } from './Block';
 import { useEngine } from './Engine';
 import { forgetBlockAddress, UI_CONNECTOR_NAME } from './UiConnector';
 import { isWidgetDesc } from './Widgets';
@@ -53,10 +53,14 @@ class FlowModel {
     const block = { value: blockValue };
 
     if (widget) {
-      blockValue.widget = {
+      // Deep-cloned so the placed block's config never aliases the
+      // shared palette default (a shallow copy would leave MultiChart's
+      // `series` array and its element objects shared by every
+      // instance placed from the palette).
+      blockValue.widget = cloneWidget({
         kind: widget.kind,
-        config: { ...(widget.defaultConfig ?? {}) },
-      };
+        config: widget.defaultConfig ?? {},
+      });
       blockValue.inputs['connector'].value = UI_CONNECTOR_NAME;
       blockValue.inputs['address'].value = id;
       // Sequential awaits: EngineCommand methods take `&mut self`, so

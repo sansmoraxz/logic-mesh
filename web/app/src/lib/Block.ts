@@ -22,6 +22,42 @@ export interface Widget {
   valueSource?: string;
 }
 
+// Plain-data deep clone for widget configs. Hand-rolled rather than
+// `structuredClone` because configs are routinely read off `$state`
+// proxies, which the structured clone algorithm rejects.
+function deepCloneConfig<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map(deepCloneConfig) as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      out[key] = deepCloneConfig(val);
+    }
+    return out as T;
+  }
+  return value;
+}
+
+/**
+ * The single clone path for every place a widget is copied — palette
+ * placement, clipboard, paste, program save and load. Deep-clones
+ * `config` (nested arrays/objects included, e.g. MultiChart's `series`
+ * array and its element objects), shallow-copies the flat
+ * `configSources` map, and carries `valueSource` — so no widget
+ * instance ever aliases another's (or the palette default's) config.
+ */
+export function cloneWidget(widget: Widget): Widget {
+  return {
+    kind: widget.kind,
+    config: widget.config ? deepCloneConfig(widget.config) : undefined,
+    configSources: widget.configSources
+      ? { ...widget.configSources }
+      : undefined,
+    valueSource: widget.valueSource,
+  };
+}
+
 /**
  * A block instance.
  */

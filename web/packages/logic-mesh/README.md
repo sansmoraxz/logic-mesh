@@ -40,8 +40,13 @@ import { initEngine } from 'logic-mesh';
 // Initialize the engine
 const engine = initEngine();
 
-// Get a command instance for the engine
+// Get a command instance before `run()` — `engineCommand()` borrows
+// the engine mutably, and `run()`'s future holds that borrow
 const command = engine.engineCommand();
+
+// Start the engine first, without awaiting: commands are only
+// serviced by the running engine's message loop
+engine.run();
 
 // Add a SineWave block
 const sineWaveId = await command.addBlock('SineWave');
@@ -50,9 +55,6 @@ const strLenId = await command.addBlock('StrLen');
 
 // Connect the blocks, sineWave -> strLen (sineWave's out port to strLen's in port)
 command.createLink(sineWaveId, strLenId, 'out', 'in');
-
-// Start the engine (this is async)
-engine.run();
 ```
 
 ### Watch for block changes
@@ -63,20 +65,23 @@ import { initEngine } from 'logic-mesh';
 // Initialize the engine
 const engine = initEngine();
 
-// Get a command instance for the engine
+// Get the command instances before `run()` — `engineCommand()`
+// borrows the engine mutably, and `run()`'s future holds that borrow
 const command = engine.engineCommand();
+// A separate command instance for the watcher
+const watchCommand = engine.engineCommand();
+
+// Start the engine first, without awaiting: commands are only
+// serviced by the running engine's message loop
+engine.run();
 
 // Add a SineWave block
 const sineWave = await command.addBlock('SineWave');
 
-// Create a new command instance for the watcher
-const watchCommand = engine.engineCommand();
 // Register a callback that will be called when the block changes
 watchCommand.createWatch((notification) => {
   console.log('Block changed', JSON.stringify(notification));
 });
-
-engine.run();
 ```
 
 ### Add a custom JavaScript block
@@ -148,7 +153,13 @@ const connector = {
 // Put the connector in the registry
 engine.registerConnector('demo', connector);
 
+// Get the command handle before `run()` — `engineCommand()` borrows
+// the engine mutably, and `run()`'s future holds that borrow.
 const command = engine.engineCommand();
+
+// Start the engine first, without awaiting: commands are only
+// serviced by the running engine's message loop.
+engine.run();
 
 // ExternalIn streams subscribed values into the graph via its `out` pin
 const inputId = await command.addBlock('ExternalIn');
@@ -159,8 +170,6 @@ await command.writeBlockInput(inputId, 'address', 'sensor/1');
 const outputId = await command.addBlock('ExternalOut');
 await command.writeBlockInput(outputId, 'connector', 'demo');
 await command.writeBlockInput(outputId, 'address', 'actuator/1');
-
-engine.run();
 
 // Attach the connector to the running engine; the engine manages its
 // lifecycle from here (it is stopped and detached on engine reset)

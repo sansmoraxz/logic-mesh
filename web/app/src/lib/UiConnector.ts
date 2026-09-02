@@ -1,4 +1,9 @@
-import type { BlocksEngine, ConnectorCallback, JsConnector } from 'logic-mesh';
+import type { ConnectorCallback, EngineCommand, JsConnector } from 'logic-mesh';
+import {
+  connectorRegistered,
+  registerConnector,
+  unregisterConnector,
+} from 'logic-mesh';
 import type { Block } from './Block';
 
 // The connector every UI widget exchanges values through. Input widgets
@@ -44,6 +49,12 @@ class UiConnector implements JsConnector {
     return () => {
       sub.live = false;
       set.delete(sub);
+      // Drop the address entry with its last subscription — the
+      // identity check guards against deleting a set a later
+      // subscribe re-created under the same address.
+      if (set.size === 0 && this.subscriptions.get(address) === set) {
+        this.subscriptions.delete(address);
+      }
     };
   }
 
@@ -72,7 +83,10 @@ class UiConnector implements JsConnector {
     this.subscriptions.clear();
     this.pushed.clear();
     this.published.clear();
-    // App-side listeners are component-owned; components remove them.
+    // App-side listeners die with the stopped connector too — a stop
+    // accompanies a reset that unmounts the widgets, and their
+    // teardowns tolerate the entry being gone already.
+    this.listeners.clear();
   }
 
   // While paused (engine execution paused), pushes only update the
@@ -134,6 +148,12 @@ class UiConnector implements JsConnector {
 
     return () => {
       set.delete(listener);
+      // Drop the address entry with its last listener — the identity
+      // check guards against deleting a set a later onValue re-created
+      // under the same address.
+      if (set.size === 0 && this.listeners.get(address) === set) {
+        this.listeners.delete(address);
+      }
     };
   }
 }
@@ -185,17 +205,18 @@ export function forgetBlockAddress(block: Block) {
 
 /**
  * Puts the UI connector in the process-wide registry. Safe to call
- * before the engine runs; registration alone does not attach it.
- * Tolerates an existing registration (e.g. after a Vite HMR module
- * re-init, where the wasm registry outlives this module).
+ * before the engine runs; registration alone does not attach it. Goes
+ * through the module-level wasm exports — never engine methods, whose
+ * wasm borrow is held for the engine's whole life once `run()` has
+ * been polled. Tolerates an existing registration (e.g. after a Vite
+ * HMR module re-init, where the wasm registry outlives this module)
+ * by replacing it with this module's instance.
  */
-export function registerUiConnector(engine: BlocksEngine) {
-  try {
-    engine.registerConnector(UI_CONNECTOR_NAME, uiConnector);
-  } catch {
-    engine.unregisterConnector(UI_CONNECTOR_NAME);
-    engine.registerConnector(UI_CONNECTOR_NAME, uiConnector);
+export function registerUiConnector() {
+  if (connectorRegistered(UI_CONNECTOR_NAME)) {
+    unregisterConnector(UI_CONNECTOR_NAME);
   }
+  registerConnector(UI_CONNECTOR_NAME, uiConnector);
 }
 
 // Serializes attach attempts: `resetEngine` resolves when Reset is
@@ -203,16 +224,14 @@ export function registerUiConnector(engine: BlocksEngine) {
 // handler) must not interleave their check-then-attach sequences.
 let attachChain: Promise<void> = Promise.resolve();
 
-async function doAttach(engine: BlocksEngine): Promise<void> {
-  const command = engine.engineCommand();
-
+async function doAttach(command: EngineCommand): Promise<void> {
   // Request/reply barrier: engine messages are FIFO and this only
   // resolves after the engine processed everything queued before it —
   // including a pending Reset that unregisters attached connectors.
   const attached = await command.listConnectors();
   if (attached.includes(UI_CONNECTOR_NAME)) return;
 
-  registerUiConnector(engine);
+  registerUiConnector();
   await command.addConnector(UI_CONNECTOR_NAME);
 }
 
@@ -221,9 +240,14 @@ async function doAttach(engine: BlocksEngine): Promise<void> {
  * connector to the running engine. Call after `engine.run()` and after
  * every engine reset — reset removes attached connectors from the
  * registry. Skips attaching when the connector is already attached.
+ *
+ * `command` must be a handle created BEFORE `engine.run()` (Engine.ts
+ * exposes a dedicated `connectorCommand`): once run() is polled, its
+ * future holds the engine object's wasm borrow forever, and creating a
+ * handle here — from a promise continuation — would throw.
  */
-export function attachUiConnector(engine: BlocksEngine): Promise<void> {
-  const next = attachChain.catch(() => {}).then(() => doAttach(engine));
+export function attachUiConnector(command: EngineCommand): Promise<void> {
+  const next = attachChain.catch(() => {}).then(() => doAttach(command));
   attachChain = next;
   return next;
 }

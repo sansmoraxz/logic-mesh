@@ -46,20 +46,35 @@
   const seriesDefs = $derived.by((): SeriesDef[] => {
     const raw = config.series;
     if (Array.isArray(raw) && raw.length > 0) {
+      // Skip gap entries — slots beyond the first with neither an
+      // address nor a label (e.g. the padding the legacy migration
+      // inserts so a converted pin keeps its slot number). They can
+      // never receive data, so they'd only render as permanently
+      // empty legend datasets. Default labels are numbered by the
+      // ORIGINAL slot so filtering doesn't renumber the rest.
       return memoDefs(
-        raw.map((s, i) => {
-          const o = (s ?? {}) as Record<string, unknown>;
-          return {
-            label:
-              o.label != null && String(o.label).length > 0
-                ? String(o.label)
-                : `series ${i + 1}`,
-            address:
-              typeof o.address === 'string' && o.address
-                ? o.address
-                : undefined,
-          };
-        }),
+        raw
+          .map((s, i) => {
+            const o = (s ?? {}) as Record<string, unknown>;
+            return {
+              def: {
+                label:
+                  o.label != null && String(o.label).length > 0
+                    ? String(o.label)
+                    : `series ${i + 1}`,
+                address:
+                  typeof o.address === 'string' && o.address
+                    ? o.address
+                    : undefined,
+              },
+              gap:
+                i > 0 &&
+                !(typeof o.address === 'string' && o.address) &&
+                !(o.label != null && String(o.label).length > 0),
+            };
+          })
+          .filter((e) => !e.gap)
+          .map((e) => e.def),
       );
     }
     // Legacy single-series config shape ({ label }).
@@ -79,17 +94,43 @@
   let count = 0;
   let sampleQueued = false;
 
-  function ensureSeries(n: number) {
-    if (dataArrays.length === n) return;
-    dataArrays = Array.from({ length: n }, () => []);
-    latest = new Array(n).fill(undefined);
-    xAxis.length = 0;
-    count = 0;
+  // The effective per-slot subscription address; series 0 falls back
+  // to this node's own address (its ExternalOut 'in').
+  function seriesAddresses(defs: SeriesDef[]): (string | undefined)[] {
+    return defs.map((s, i) => s.address ?? (i === 0 ? block.id : undefined));
+  }
+
+  // The addresses the per-series buffers were built for. Keying the
+  // buffers off the address list — not just the series count — means
+  // re-pointing a series at another source resets that slot instead of
+  // showing the old source's history (and stale latest value) under
+  // the new label.
+  let builtFor: (string | undefined)[] = [];
+
+  function ensureSeries(defs: SeriesDef[]) {
+    const addresses = seriesAddresses(defs);
+    if (addresses.length !== builtFor.length) {
+      // Count changed: rebuild everything — history is not remappable.
+      dataArrays = Array.from({ length: addresses.length }, () => []);
+      latest = new Array(addresses.length).fill(undefined);
+      xAxis.length = 0;
+      count = 0;
+    } else {
+      // Same count: reset only the slots whose address changed, padded
+      // with NaN so they stay aligned with the shared x axis; the
+      // unchanged series keep their history.
+      for (let i = 0; i < addresses.length; i++) {
+        if (addresses[i] === builtFor[i]) continue;
+        dataArrays[i] = new Array<number>(xAxis.length).fill(NaN);
+        latest[i] = undefined;
+      }
+    }
+    builtFor = addresses;
   }
 
   function syncDatasets(defs: SeriesDef[]) {
     if (!chart) return;
-    ensureSeries(defs.length);
+    ensureSeries(defs);
     chart.data.labels = xAxis;
     chart.data.datasets = defs.map((s, i) => ({
       label: s.label,
@@ -161,9 +202,8 @@
 
   $effect(() => {
     const defs = seriesDefs;
-    ensureSeries(defs.length);
-    const unsubs = defs.map((s, i) => {
-      const address = s.address ?? (i === 0 ? block.id : undefined);
+    ensureSeries(defs);
+    const unsubs = seriesAddresses(defs).map((address, i) => {
       if (!address) return undefined;
       return onValue(address, (value) => {
         const num = numericValue(value);

@@ -130,13 +130,19 @@ engine.registerConnector('sensors', {
   request(address, value) { /* request/response */ },
 });
 
+// Get the command handle before `run()` — `engineCommand()` borrows
+// the engine mutably, and `run()`'s future holds that borrow.
 const command = engine.engineCommand();
+
+// Start the engine first, without awaiting: commands are only
+// serviced by the running engine's message loop.
+engine.run();
+
 const id = await command.addBlock('ExternalIn');
 await command.writeBlockInput(id, 'connector', 'sensors');
 await command.writeBlockInput(id, 'address', 'zone-1/temp');
 // `id`'s `out` pin now streams zone-1/temp values into the graph
 
-engine.run();
 await command.addConnector('sensors'); // attach to the running engine
 ```
 
@@ -153,7 +159,7 @@ await command.addConnector('sensors'); // attach to the running engine
 - **Block trait** — every unit of work implements `async fn execute(&mut self)`. The `#[block]` attribute macro generates the boilerplate (description, registration, default impl).
 - **Reactive scheduler** — blocks suspend on input pins via `read_inputs_until_ready` (event-driven) or `wait_on_inputs(timeout)` (event + periodic throttle). The engine only resumes blocks whose data has actually changed.
 - **Type-checked pins** — pin kinds (`Number`, `Bool`, `Str`, `Dict`, `List`, `Null`) are validated at link time; mismatched values fault the receiving block instead of silently corrupting state.
-- **Connectors** — external systems implement the `Connector` trait (`subscribe`/`publish`/`request`, plus optional `start`/`stop`); the engine manages their lifecycle and connectors can be added or removed at runtime through engine messages. `ExternalIn` streams subscribed values into the graph, `ExternalOut` publishes wired values, and `Request` does request/response with timeout and cancellation. See `examples/connector_demo.rs` for a concrete implementation.
+- **Connectors** — external systems implement the `Connector` trait (`subscribe`/`publish`/`request`, plus optional `start`/`stop`); the engine manages their lifecycle and connectors can be added or removed at runtime through engine messages. `ExternalIn` streams subscribed values into the graph, `ExternalOut` publishes wired values, and `Request` does request/response — both with timeout and cancellation. See `examples/connector_demo.rs` for a concrete implementation.
 - **Threading models** — single-threaded (default) and multi-threaded (`features = ["multi-threaded"]`) engines on native; WASM uses single-threaded with the browser event loop.
 - **Auto-discovered registry** — `build.rs` walks `src/blocks/<category>/` and assembles the static block registry, so adding a new block is one file plus a `mod.rs` re-export.
 - **Save/load format** — programs serialize to a stable JSON shape (blocks, links, positions, optional labels and per-program description) understood by both the Rust API and the web editor.
