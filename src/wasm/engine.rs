@@ -88,7 +88,10 @@ impl BlocksEngine {
     ///
     /// `desc` is a [`JsBlockDesc`] describing the block. `func`, if provided,
     /// is the JavaScript function that implements the block logic — without it
-    /// the block is a no-op.
+    /// the block is a no-op. Pin kinds must be the lowercase haystack
+    /// names (`"number"`, `"str"`, …); an unrecognized kind or run
+    /// condition rejects the registration instead of silently
+    /// registering a `Null` (accepts-anything) pin.
     #[wasm_bindgen(js_name = "registerBlock")]
     pub fn register_block(
         &mut self,
@@ -101,7 +104,8 @@ impl BlocksEngine {
         let name = desc.name.clone();
         let lib = desc.lib.clone();
 
-        register_block_desc(&desc.into()).map_err(|err| err.to_string())?;
+        let desc: crate::base::block::BlockDesc = desc.try_into()?;
+        register_block_desc(&desc).map_err(|err| err.to_string())?;
 
         if let Some(func) = func {
             JS_FNS.with_borrow_mut(|reg| {

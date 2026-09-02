@@ -27,6 +27,16 @@
 //! (a partially-awaited `changed()` keeps the value pending; the next
 //! cycle drains it from `try_take`).
 //!
+//! Blocks with a second await after the input wait — the external
+//! blocks awaiting a connector operation
+//! ([`ExternalOut`](crate::blocks::external::ExternalOut),
+//! [`Request`](crate::blocks::external::Request)) and, on wasm, the
+//! `JsBlock` awaiting a JS Promise — hold the drained work in a pending
+//! slot on the block that survives the drop: the next cycle re-issues
+//! it instead of waiting for fresh input, so a cancellation costs a
+//! possible duplicate of the external effect (at-least-once), never the
+//! reaction itself.
+//!
 //! ## Module layout
 //!
 //! - `mailbox` — the `BlockMailboxCmd` enum and the actor-side
