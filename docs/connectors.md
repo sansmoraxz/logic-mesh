@@ -599,6 +599,8 @@ engine.add_connector("echo", ConnectorHandle::new(Echo))?;   // started when run
 ```
 
 **JavaScript** — a plain object, registered and then attached to the running engine.
+The npm package wraps the ordering-sensitive start sequence shown below in
+`startEngine()`; the raw sequence stays authoritative for what actually happens.
 
 ```ts
 // Module-level export against the process-wide registry — safe to call at any
@@ -626,3 +628,65 @@ await command.writeBlockInput(id, 'address', 'zone-1/temp');
 
 await command.addConnector('sensors');        // attach: start() + engine-managed from here
 ```
+
+That manual sequence is easy to get wrong — a handle minted after `run()` trips
+the wasm borrow guard, a command awaited before `run()` deadlocks — so the npm
+package owns it in `startEngine()` (and `createEngineSession()` for hosts that
+must create handles at module load but start the engine later). The example
+above, with the wrapper:
+
+```ts
+import { registerConnector, startEngine } from 'logic-mesh';
+
+registerConnector('sensors', { subscribe, publish, request });
+
+// Engine created, handles pre-created, message loop running.
+const { command } = startEngine();
+
+const id = await command.addBlock('ExternalIn');
+await command.writeBlockInput(id, 'connector', 'sensors');
+await command.writeBlockInput(id, 'address', 'zone-1/temp');
+
+await command.addConnector('sensors');
+```
+
+The returned session also carries a dedicated `connectorCommand` handle for
+attach flows, `watch()` backed by pre-created handles (a watch permanently
+occupies one, and none can be created after start), and `reset()`/`stop()`
+routed through an internal control handle so they never collide with a
+caller's in-flight command.
+
+Finally, when the external system is just a set of request/response functions,
+`defineJsBlocks` skips the connector boilerplate entirely: it registers one
+connector whose addresses are JS function names, and materializes each call
+site as a `Request` block — argument on `in`, awaited result on `out`,
+rejections as block faults, the `timeout` pin bounding functions that never
+settle.
+
+```ts
+import { defineJsBlocks, startEngine } from 'logic-mesh';
+
+const session = startEngine();
+const jsBlocks = defineJsBlocks({ scale: (value) => (value as number) * 2 });
+await jsBlocks.attach(session.command);
+
+const id = await jsBlocks.addBlock(session.command, 'scale');
+await session.command.writeBlockInput(id, 'in', 21); // out becomes 42
+```
+
+`defineJsBlocks` complements — it does not replace — the pre-existing
+`registerBlock` path for JS-implemented block types. The two serve different
+shapes, and both stay:
+
+- **`defineJsBlocks`** for logic the graph calls with one value: a single `in`
+  and `out` through a `Request` block, attachable to a *running* engine, a
+  `timeout` pin, and at-least-once retry when the block actor cancels a call
+  mid-flight. Several inputs travel as one dict on the `in` pin.
+- **`registerBlock`** for real block types: several independently linkable
+  input pins, per-pin kinds and defaults, an entry in the block library.
+  Registration happens before the engine runs, and the block executes inside
+  the actor like any built-in.
+- A **full connector** whenever values flow on their own schedule — streams in
+  (`subscribe`/`ExternalIn`), sinks out, whole protocols.
+
+The npm package README carries the same guidance as a decision table.

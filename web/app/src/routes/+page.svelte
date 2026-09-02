@@ -51,7 +51,7 @@
     clipboardWrite,
   } from '$lib/Clipboard';
 
-  const { engine, blocks, command, connectorCommand, startWatch } = useEngine();
+  const { start, blocks, command, connectorCommand, startWatch } = useEngine();
 
   const nodeTypes = { custom: BlockNode };
 
@@ -62,7 +62,10 @@
   onMount(() => {
     if (!engineRunning) {
       engineRunning = true;
-      engine.run();
+      // Kick off the engine through the session so it knows it has
+      // started (watches then use the pre-created slots); same effect
+      // as the old direct `engine.run()` call, same tick.
+      start();
 
       // addConnector is a message to the now-running engine;
       // registration alone (in useEngine) does not attach. Attach uses

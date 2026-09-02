@@ -1,38 +1,45 @@
 import type {
   BlockDesc,
   BlockNotification,
-  BlocksEngine,
-  EngineCommand,
+  EngineSession,
 } from 'logic-mesh';
-import { initEngine } from 'logic-mesh';
+import { createEngineSession } from 'logic-mesh';
 import { registerUiConnector } from './UiConnector';
 import { widgetBlockDescs } from './Widgets';
 
-let engine: BlocksEngine;
+let session: EngineSession;
 let blocks: BlockDesc[];
-let command: EngineCommand;
-let connectorCommand: EngineCommand;
 
 export function useEngine() {
-  if (!engine) {
-    engine = initEngine();
+  if (!session) {
+    // The session pre-creates every command handle — the general one,
+    // the dedicated connector-attach handle, and the watch slot —
+    // before the engine can run, which is the only time handles can be
+    // created (see the EngineSession docs in the logic-mesh package
+    // for the wasm borrow trap the ordering avoids). The engine itself
+    // is started later, from the page's onMount, via `start()`.
+    session = createEngineSession();
     registerUiConnector();
-    blocks = [...engine.listBlocks(), ...widgetBlockDescs];
-    command = engine.engineCommand();
-    // Dedicated handle for connector attachment. Created here — before
-    // `engine.run()` — because once run() is polled its future holds
-    // the wasm object's borrow for the engine's whole life, and ANY
-    // later `engine.*` call from a promise continuation throws
-    // ("recursive use of an object"). All handles feed the same engine
-    // queue, so the FIFO barrier in `attachUiConnector` still orders
-    // this handle's messages after a Reset sent through `command`.
-    connectorCommand = engine.engineCommand();
+    blocks = [...session.engine.listBlocks(), ...widgetBlockDescs];
   }
 
   function startWatch(callback: (notification: BlockNotification) => void) {
-    const watchCommand = engine.engineCommand();
-    watchCommand.createWatch(callback);
+    session.watch(callback);
   }
 
-  return { engine, blocks, command, connectorCommand, startWatch };
+  // Kicks off the engine's message loop, un-awaited — the session owns
+  // the ordering rules and marks itself started, so a later startWatch
+  // draws from the pre-created watch slots instead of touching the
+  // (now off-limits) engine object.
+  function start() {
+    session.start();
+  }
+
+  return {
+    start,
+    blocks,
+    command: session.command,
+    connectorCommand: session.connectorCommand,
+    startWatch,
+  };
 }

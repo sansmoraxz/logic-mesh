@@ -7,6 +7,18 @@ export {
   connectorRegistered,
 } from './logic_mesh.js';
 export { defineBlock, TypedBlock } from './TypedBlock';
+export {
+  createEngineSession,
+  startEngine,
+  EngineSession,
+  type EngineSessionOptions,
+} from './EngineSession';
+export {
+  defineJsBlocks,
+  type JsBlocks,
+  type JsBlockFn,
+  type JsBlocksOptions,
+} from './JsBlocks';
 
 /**
  * The callback a connector subscription pushes values through.

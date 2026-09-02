@@ -118,10 +118,9 @@ Scale.register(engine);
 Or bridge the engine to an external system with a connector implemented in plain JavaScript:
 
 ```ts
-import { initEngine } from 'logic-mesh';
+import { registerConnector, startEngine } from 'logic-mesh';
 
-const engine = initEngine();
-engine.registerConnector('sensors', {
+registerConnector('sensors', {
   subscribe(address, callback) {
     const timer = setInterval(() => callback(readSensor(address)), 1000);
     return () => clearInterval(timer);
@@ -130,13 +129,9 @@ engine.registerConnector('sensors', {
   request(address, value) { /* request/response */ },
 });
 
-// Get the command handle before `run()` — `engineCommand()` borrows
-// the engine mutably, and `run()`'s future holds that borrow.
-const command = engine.engineCommand();
-
-// Start the engine first, without awaiting: commands are only
-// serviced by the running engine's message loop.
-engine.run();
+// Creates the engine, prepares command handles, starts the message
+// loop — the ordering-sensitive part is owned by the wrapper
+const { command } = startEngine();
 
 const id = await command.addBlock('ExternalIn');
 await command.writeBlockInput(id, 'connector', 'sensors');
@@ -144,6 +139,21 @@ await command.writeBlockInput(id, 'address', 'zone-1/temp');
 // `id`'s `out` pin now streams zone-1/temp values into the graph
 
 await command.addConnector('sensors'); // attach to the running engine
+```
+
+For plain request/response functions there is a shortcut — `defineJsBlocks`
+exposes JS functions (sync or async) as `Request` blocks through a single
+generated connector:
+
+```ts
+import { defineJsBlocks, startEngine } from 'logic-mesh';
+
+const session = startEngine();
+const jsBlocks = defineJsBlocks({ scale: (value) => (value as number) * 2 });
+await jsBlocks.attach(session.command);
+
+const id = await jsBlocks.addBlock(session.command, 'scale');
+await session.command.writeBlockInput(id, 'in', 21); // out becomes 42
 ```
 
 ## Possible applications
