@@ -317,8 +317,8 @@ mod tests {
         use crate::base::engine::messages::EngineMessage::{
             WriteBlockInputReq, WriteBlockInputRes,
         };
-        use crate::blocks::external::{ExternalIn, ExternalOut, Request};
         use crate::blocks::external::support::mock::MockConnector;
+        use crate::blocks::external::{ExternalIn, ExternalOut, Request};
         use libhaystack::val::Value;
 
         /// End-to-end: a [`MockConnector`] feeds an [`ExternalIn`] block

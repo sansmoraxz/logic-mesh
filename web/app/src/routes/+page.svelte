@@ -389,9 +389,7 @@
       toast.warning(dropped);
     }
     if (migration.converted.length) {
-      toast.info(
-        `Migrated legacy program: ${migration.converted.join('; ')}`,
-      );
+      toast.info(`Migrated legacy program: ${migration.converted.join('; ')}`);
     }
 
     newNodes = newNodes.map((node) => {

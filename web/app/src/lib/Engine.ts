@@ -1,8 +1,4 @@
-import type {
-  BlockDesc,
-  BlockNotification,
-  EngineSession,
-} from 'logic-mesh';
+import type { BlockDesc, BlockNotification, EngineSession } from 'logic-mesh';
 import { createEngineSession } from 'logic-mesh';
 import { registerUiConnector } from './UiConnector';
 import { widgetBlockDescs } from './Widgets';
