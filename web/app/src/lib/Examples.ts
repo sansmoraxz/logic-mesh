@@ -63,7 +63,7 @@ const datReset = {
     '11111111-1111-4111-8111-000000000004': {
       name: 'ExternalOut',
       lib: 'core',
-      positions: { x: 749, y: -69 },
+      positions: { x: 1200, y: -60 },
       widget: {
         kind: 'MultiChart',
         config: {
@@ -136,7 +136,7 @@ const datReset = {
     '11111111-1111-4111-8111-000000000008': {
       name: 'ExternalOut',
       lib: 'core',
-      positions: { x: 990, y: 60 },
+      positions: { x: 960, y: -20 },
       label: 'SAT SP series',
       inputs: {
         in: { value: 60, isConnected: false },
@@ -150,7 +150,7 @@ const datReset = {
     '11111111-1111-4111-8111-000000000009': {
       name: 'ExternalOut',
       lib: 'core',
-      positions: { x: 990, y: 190 },
+      positions: { x: 960, y: 150 },
       label: 'SAT PV series',
       inputs: {
         in: { value: 58.93, isConnected: false },
@@ -166,7 +166,7 @@ const datReset = {
     '11111111-1111-4111-8111-00000000000a': {
       name: 'ExternalOut',
       lib: 'core',
-      positions: { x: 990, y: 320 },
+      positions: { x: 1200, y: 200 },
       widget: {
         kind: 'Bar',
         config: { min: 50, max: 70, label: 'PV vs SP' },
@@ -595,7 +595,7 @@ const economizer = {
     '33333333-3333-4333-8333-00000000000c': {
       name: 'ExternalOut',
       lib: 'core',
-      positions: { x: 990, y: 30 },
+      positions: { x: 480, y: 140 },
       label: 'h_RA series',
       inputs: {
         in: { value: {}, isConnected: false },
