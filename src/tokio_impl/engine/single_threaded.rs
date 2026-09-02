@@ -304,7 +304,10 @@ mod tests {
 
         use super::*;
         use crate::base::connector::unregister_connector;
-        use crate::blocks::external::ExternalIn;
+        use crate::base::engine::messages::EngineMessage::{
+            WriteBlockInputReq, WriteBlockInputRes,
+        };
+        use crate::blocks::external::{ExternalIn, ExternalOut, Request};
         use crate::blocks::external::support::mock::MockConnector;
         use libhaystack::val::Value;
 
@@ -379,6 +382,247 @@ mod tests {
             // Propagate any driver-side panic so assertion failures
             // fail the test instead of vanishing with the thread.
             driver.join().unwrap().unwrap();
+
+            unregister_connector(&name);
+        }
+
+        /// Regression: a value written to `in` over the engine's
+        /// `WriteBlockInputReq` path lands in the input cache directly
+        /// (see `BlockMailboxCmd::WriteInput`), and the command's own
+        /// arrival cancels the block's in-flight `execute` — so
+        /// [`ExternalOut`]'s freshness detection must not depend on a
+        /// snapshot taken inside `execute`.
+        #[tokio::test(flavor = "current_thread")]
+        async fn write_block_input_fires_external_out() {
+            let name = format!("e2e-out-{}", Uuid::new_v4());
+            let mock = Arc::new(MockConnector::default());
+
+            let ext = ExternalOut::new();
+            let ext_uuid = *ext.id();
+
+            let mut eng = SingleThreadedEngine::new();
+            eng.add_connector(&name, mock.clone()).expect("added");
+
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_mock = mock.clone();
+            let driver_name = name.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    for (pin, value) in [
+                        ("connector", Value::make_str(&driver_name)),
+                        ("address", Value::make_str("topic")),
+                        ("in", 42.into()),
+                    ] {
+                        let _ = engine_sender
+                            .send(WriteBlockInputReq(
+                                channel_id,
+                                ext_uuid,
+                                pin.to_string(),
+                                value,
+                            ))
+                            .await;
+                        match receiver.recv().await {
+                            Some(WriteBlockInputRes(Ok(_))) => {}
+                            other => panic!("Expected WriteBlockInputRes(Ok), got {:?}", other),
+                        }
+                    }
+
+                    // Poll for the publish. Give up after ~2s and shut
+                    // the engine down either way — the main-thread
+                    // assertion reports a lost value; panicking here
+                    // before `Shutdown` would hang `eng.run()` instead
+                    // of failing the test.
+                    for _ in 0..40 {
+                        if !driver_mock.published.lock().unwrap().is_empty() {
+                            break;
+                        }
+                        sleep(Duration::from_millis(50)).await;
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.schedule(ext).unwrap();
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+
+            assert_eq!(
+                mock.published.lock().unwrap().clone(),
+                vec![("topic".to_string(), 42.into())],
+                "an `in` value delivered over WriteBlockInputReq is published"
+            );
+
+            unregister_connector(&name);
+        }
+
+        /// Same regression as `write_block_input_fires_external_out`,
+        /// for the [`Request`] block's identical freshness detection.
+        #[tokio::test(flavor = "current_thread")]
+        async fn write_block_input_fires_request() {
+            let name = format!("e2e-req-{}", Uuid::new_v4());
+            let mock = Arc::new(MockConnector::default());
+
+            let req = Request::new();
+            let req_uuid = *req.id();
+
+            let mut eng = SingleThreadedEngine::new();
+            eng.add_connector(&name, mock.clone()).expect("added");
+
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_mock = mock.clone();
+            let driver_name = name.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    for (pin, value) in [
+                        ("connector", Value::make_str(&driver_name)),
+                        ("address", Value::make_str("route")),
+                        ("in", 42.into()),
+                    ] {
+                        let _ = engine_sender
+                            .send(WriteBlockInputReq(
+                                channel_id,
+                                req_uuid,
+                                pin.to_string(),
+                                value,
+                            ))
+                            .await;
+                        match receiver.recv().await {
+                            Some(WriteBlockInputRes(Ok(_))) => {}
+                            other => panic!("Expected WriteBlockInputRes(Ok), got {:?}", other),
+                        }
+                    }
+
+                    // See `write_block_input_fires_external_out` for
+                    // why this gives up quietly instead of panicking.
+                    for _ in 0..40 {
+                        if !driver_mock.requests.lock().unwrap().is_empty() {
+                            break;
+                        }
+                        sleep(Duration::from_millis(50)).await;
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.schedule(req).unwrap();
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+
+            assert_eq!(
+                mock.requests.lock().unwrap().clone(),
+                vec![("route".to_string(), 42.into())],
+                "an `in` value delivered over WriteBlockInputReq is sent"
+            );
+
+            unregister_connector(&name);
+        }
+
+        /// Regression: `load_program` pushes saved pin constants through
+        /// the same `WriteInput` mailbox path, so a program saved with an
+        /// initial `in` value on an [`ExternalOut`] must publish that
+        /// value after load.
+        #[tokio::test(flavor = "current_thread")]
+        async fn load_program_fires_saved_external_out_input() {
+            let name = format!("e2e-load-out-{}", Uuid::new_v4());
+            let mock = Arc::new(MockConnector::default());
+
+            let ext_uuid = Uuid::new_v4();
+            let mut inputs = std::collections::BTreeMap::new();
+            inputs.insert(
+                "in".to_string(),
+                PinValue {
+                    value: 42.into(),
+                    is_connected: false,
+                },
+            );
+            inputs.insert(
+                "connector".to_string(),
+                PinValue {
+                    value: Value::make_str(&name),
+                    is_connected: false,
+                },
+            );
+            inputs.insert(
+                "address".to_string(),
+                PinValue {
+                    value: Value::make_str("topic"),
+                    is_connected: false,
+                },
+            );
+
+            let mut blocks = std::collections::BTreeMap::new();
+            blocks.insert(
+                ext_uuid.to_string(),
+                ProgramBlock {
+                    name: "ExternalOut".to_string(),
+                    lib: "core".to_string(),
+                    label: None,
+                    positions: None,
+                    inputs,
+                    outputs: Default::default(),
+                },
+            );
+
+            let program = Program {
+                name: Some("saved-external-out".to_string()),
+                description: None,
+                blocks,
+                links: Default::default(),
+            };
+
+            let mut eng = SingleThreadedEngine::new();
+            eng.add_connector(&name, mock.clone()).expect("added");
+
+            let (sender, mut receiver) = mpsc::channel(32);
+            let channel_id = Uuid::new_v4();
+            let engine_sender = eng.create_message_channel(channel_id, sender);
+
+            let driver_mock = mock.clone();
+            let driver = thread::spawn(move || {
+                let rt = Runtime::new().expect("RT");
+                let handle = rt.spawn(async move {
+                    let _ = engine_sender
+                        .send(LoadProgramReq(channel_id, program.clone()))
+                        .await;
+                    match receiver.recv().await {
+                        Some(LoadProgramRes(Ok(()))) => {}
+                        other => panic!("Expected LoadProgramRes(Ok), got {:?}", other),
+                    }
+
+                    // See `write_block_input_fires_external_out` for
+                    // why this gives up quietly instead of panicking.
+                    for _ in 0..40 {
+                        if !driver_mock.published.lock().unwrap().is_empty() {
+                            break;
+                        }
+                        sleep(Duration::from_millis(50)).await;
+                    }
+
+                    let _ = engine_sender.send(Shutdown).await;
+                });
+                rt.block_on(handle)
+            });
+
+            eng.run().await;
+            driver.join().unwrap().unwrap();
+
+            assert_eq!(
+                mock.published.lock().unwrap().clone(),
+                vec![("topic".to_string(), 42.into())],
+                "a saved initial `in` value is published after program load"
+            );
 
             unregister_connector(&name);
         }

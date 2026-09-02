@@ -11,15 +11,11 @@ use crate::base::{
     input::{InputProps, input_reader::InputReader},
     output::Output,
 };
-use crate::blocks::external::support::input_as_str;
+use crate::blocks::external::support::{input_as_str, input_as_timeout_millis};
 use crate::tokio_impl::block::drain_ready_inputs;
 use crate::tokio_impl::sleep::sleep_millis;
 
 use crate::{blocks::InputImpl, blocks::OutputImpl};
-
-/// The deadline used when the `timeout` pin is unset or invalid, in
-/// milliseconds.
-const DEFAULT_TIMEOUT_MILLIS: u64 = 5000;
 
 /// Performs a request/response round trip through an external system.
 ///
@@ -39,7 +35,9 @@ const DEFAULT_TIMEOUT_MILLIS: u64 = 5000;
 /// like value flow everywhere in the engine — re-emitting the value
 /// already cached on `in` does not fire. A value that arrives before
 /// the `connector` and `address` pins resolve is held and sent once
-/// they do.
+/// they do. Values reaching `in` through the engine's pin-write path —
+/// a UI write, or a saved program's initial value on load — count as
+/// fresh just like linked value flow.
 ///
 /// # Delivery semantics
 ///
@@ -70,36 +68,61 @@ pub struct Request {
     /// is re-issued, and cleared on any completion — response, request
     /// error, connector miss, or timeout.
     pending: Option<Value>,
+    /// The last `in` cache value `execute` has taken note of — the
+    /// freshness baseline. Persisted on the block rather than
+    /// snapshotted per `execute` call because the cache can move while
+    /// no `execute` is running: the engine's `WriteInput` mailbox
+    /// command writes the cache directly (no watch traffic), and its
+    /// own arrival is what cancels the in-flight `execute` — so a
+    /// snapshot taken at the next entry would already contain the new
+    /// value and the freshness compare could never fire.
+    last_input: Option<Value>,
 }
 
-impl Block for Request {
-    async fn execute(&mut self) {
-        // Drain without blocking only when the held request can be
-        // re-issued right away; otherwise block on inputs so the actor
-        // does not spin. Config pins are still drained either way, so
-        // rebinds are honored before every attempt.
-        let can_retry_now = self.pending.is_some()
-            && input_as_str(&self.connector).is_some()
-            && input_as_str(&self.address).is_some();
-
-        let before = self.input.get_value().cloned();
-        if can_retry_now {
-            drain_ready_inputs(self);
-        } else {
-            self.read_inputs_until_ready().await;
+impl Request {
+    /// Promotes a fresh `in` value to `pending`. Only a move of the
+    /// `in` cache away from `last_input` is fresh — the cache moves on
+    /// genuine value changes alone, so a config-only pin write cannot
+    /// re-fire the request that produced it, and a retry of `pending`
+    /// is never mistaken for fresh input. A fresh value replaces any
+    /// held retry; `Null` fires nothing but still moves the baseline,
+    /// so a later return to the previous value fires again.
+    fn promote_fresh_input(&mut self) {
+        if self.input.get_value() == self.last_input.as_ref() {
+            return;
         }
-
-        // Only a change of the `in` cache is a fresh value — the cache
-        // moves on genuine value changes alone, so a config-only pin
-        // write cannot re-fire the request that produced it, and a
-        // retry of `pending` is never mistaken for fresh input. A
-        // fresh value replaces any held retry; `Null` fires nothing.
-        if self.input.get_value() != before.as_ref()
-            && let Some(value) = self.input.get_value()
+        self.last_input = self.input.get_value().cloned();
+        if let Some(value) = &self.last_input
             && !matches!(value, Value::Null)
         {
             self.pending = Some(value.clone());
         }
+    }
+}
+
+impl Block for Request {
+    async fn execute(&mut self) {
+        // Promote before deciding whether to block on inputs: a value
+        // the engine wrote into the `in` cache between `execute` calls
+        // (a UI pin write, `load_program` seeding — both take the
+        // `WriteInput` mailbox path) produces no watch traffic, so
+        // waiting on inputs would park right past it.
+        self.promote_fresh_input();
+
+        // Drain without blocking only when the held request can be
+        // issued right away; otherwise block on inputs so the actor
+        // does not spin. Config pins are still drained either way, so
+        // rebinds are honored before every attempt.
+        let can_send_now = self.pending.is_some()
+            && input_as_str(&self.connector).is_some()
+            && input_as_str(&self.address).is_some();
+
+        if can_send_now {
+            drain_ready_inputs(self);
+        } else {
+            self.read_inputs_until_ready().await;
+        }
+        self.promote_fresh_input();
 
         let Some(value) = self.pending.clone() else {
             return;
@@ -111,12 +134,7 @@ impl Block for Request {
             return;
         };
 
-        let timeout_millis = match self.timeout.get_value() {
-            Some(Value::Number(num)) if num.value.is_finite() && num.value > 0.0 => {
-                num.value.ceil() as u64
-            }
-            _ => DEFAULT_TIMEOUT_MILLIS,
-        };
+        let timeout_millis = input_as_timeout_millis(&self.timeout);
 
         let Some(handle) = get_connector(&connector) else {
             self.pending = None;
@@ -378,5 +396,45 @@ mod test {
         write_all(&mut block, &unique_name("req-missing"), 42.into()).await;
         block.execute().await;
         assert!(block.state().is_fault());
+    }
+
+    /// The engine's `WriteInput` mailbox command writes the `in` cache
+    /// directly — no watch traffic — and the command's own arrival is
+    /// what cancels the in-flight `execute`, so the write always lands
+    /// between two `execute` calls. The next `execute` must still
+    /// treat the value as fresh and send the request.
+    #[tokio::test]
+    async fn cache_write_between_executes_sends() {
+        use crate::base::Status;
+        use crate::base::input::Input;
+
+        let name = unique_name("req-cache-write");
+        let mock = Arc::new(MockConnector::default());
+        register_connector(&name, mock.clone()).expect("registered");
+
+        let mut block = Request::new();
+        write_block_inputs([
+            (&mut block.connector, Value::make_str(&name)),
+            (&mut block.address, Value::make_str("route")),
+        ])
+        .await;
+
+        // Mimic `BlockMailboxCmd::WriteInput`: a direct cache write on
+        // the `in` pin, invisible to the watch machinery.
+        block.input.set_value(42.into(), Status::Ok);
+
+        tokio::time::timeout(Duration::from_secs(1), block.execute())
+            .await
+            .expect("execute sends the cache-written value instead of parking");
+
+        assert_eq!(
+            mock.requests.lock().unwrap().clone(),
+            vec![("route".to_string(), 42.into())],
+            "a cache-written `in` value is sent"
+        );
+        assert_eq!(block.out.value, 42.into());
+        assert!(!block.state().is_fault());
+
+        unregister_connector(&name);
     }
 }

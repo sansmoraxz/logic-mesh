@@ -17,6 +17,17 @@ use crate::base::engine::messages::EngineMessage;
 use crate::single_threaded::Messages;
 
 /// Commands a running instance of a Block Engine.
+///
+/// Each handle owns a private reply channel whose replies carry no
+/// correlation id: they are matched to requests purely by order, so at
+/// most one request may be outstanding per handle at a time. The
+/// methods uphold this discipline themselves — each awaits its reply
+/// before returning, and the `&mut self` borrow serializes calls on a
+/// handle — so JS callers only need to await each returned promise; a
+/// send-without-receive that desynchronizes every later reply on the
+/// handle cannot be expressed through this API. The engine also
+/// delivers replies with a non-blocking send: a full channel (capacity
+/// 32) drops the reply rather than stall the engine.
 #[wasm_bindgen]
 pub struct EngineCommand {
     uuid: Uuid,

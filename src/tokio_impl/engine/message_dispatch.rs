@@ -205,6 +205,15 @@ pub(super) async fn dispatch_message(engine: &mut SingleThreadedEngine, msg: Mes
     }
 }
 
+/// Sends `engine_message` to the reply channel registered under
+/// `sender_uuid`.
+///
+/// Replies carry no correlation id — a caller matches replies to
+/// requests purely by order, which is why each channel must hold to the
+/// one-outstanding-request discipline documented on
+/// [`create_message_channel`](crate::base::engine::Engine::create_message_channel).
+/// `try_send` keeps the dispatcher from ever blocking on a slow caller:
+/// if the (capacity-32) channel is full, the reply is silently dropped.
 fn reply_to_sender(engine: &mut SingleThreadedEngine, sender_uuid: Uuid, engine_message: Messages) {
     for (sender_id, sender) in engine.reply_senders.iter() {
         if sender_id != &sender_uuid {

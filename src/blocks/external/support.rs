@@ -38,6 +38,24 @@ pub(crate) fn input_as_str(input: &InputImpl) -> Option<String> {
     }
 }
 
+/// The deadline used when a block's `timeout` pin is unset or invalid,
+/// in milliseconds.
+pub(crate) const DEFAULT_TIMEOUT_MILLIS: u64 = 5000;
+
+/// Reads a `Number` input as a millisecond deadline. The value is read
+/// as raw milliseconds — the Number's unit is ignored — and must be
+/// finite and greater than zero; fractions round up to the next
+/// millisecond, and anything else (unset, non-Number, NaN, infinite,
+/// zero, negative) falls back to [`DEFAULT_TIMEOUT_MILLIS`].
+pub(crate) fn input_as_timeout_millis(input: &InputImpl) -> u64 {
+    match input.get_value() {
+        Some(Value::Number(num)) if num.value.is_finite() && num.value > 0.0 => {
+            num.value.ceil() as u64
+        }
+        _ => DEFAULT_TIMEOUT_MILLIS,
+    }
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub(crate) mod mock {
     use std::collections::HashMap;

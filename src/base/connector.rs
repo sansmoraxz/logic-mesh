@@ -32,6 +32,13 @@ use super::error::ConnectorError;
 /// unsubscribe call, so implementations should release any
 /// protocol-level subscription from the stream's `Drop`.
 ///
+/// Callers race the stream's `next()` against timers and mailbox
+/// commands, so a `poll_next` that has internally dequeued an item
+/// must keep it buffered until a poll actually yields it — an
+/// implementation that dequeues and then discards the item when the
+/// poll is abandoned loses values. Channel receivers already behave
+/// this way.
+///
 /// The `Sync` bound exists because blocks hold the stream as a plain
 /// struct field, and native block registration requires blocks to be
 /// `Send + Sync`; channel receivers such as `tokio::sync::mpsc` and
@@ -45,6 +52,13 @@ pub type ValueStream =
 /// Dropping the stream ends the subscription — there is no explicit
 /// unsubscribe call, so implementations should release any
 /// protocol-level subscription from the stream's `Drop`.
+///
+/// Callers race the stream's `next()` against timers and mailbox
+/// commands, so a `poll_next` that has internally dequeued an item
+/// must keep it buffered until a poll actually yields it — an
+/// implementation that dequeues and then discards the item when the
+/// poll is abandoned loses values. Channel receivers already behave
+/// this way.
 ///
 /// On `wasm32` the stream carries no `Send + Sync` bounds, as the host
 /// is single-threaded and connectors may hold `js_sys` types.
@@ -79,7 +93,15 @@ pub type ConnectorFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T, Connecto
 /// actor mailbox and drop the in-flight future when an engine command
 /// arrives. Dropping a future must leave the connector in a usable
 /// state, and a dropped [`request`](Connector::request) should abort
-/// the in-flight operation where the protocol allows.
+/// the in-flight operation where the protocol allows. A dropped
+/// [`subscribe`](Connector::subscribe) future must release any
+/// protocol subscription it already established — nobody will ever
+/// hold the stream, so nothing else can end it. The engine also drops
+/// a [`start`](Connector::start) that outruns its lifecycle deadline;
+/// that must leave the connector in a state where the
+/// [`stop`](Connector::stop) the engine issues afterwards —
+/// immediately on a failed attach, or at shutdown/reset for a start
+/// driven from `run()` — fully winds it down.
 ///
 /// # Examples
 ///
@@ -163,7 +185,15 @@ pub trait Connector: Send + Sync {
 /// actor mailbox and drop the in-flight future when an engine command
 /// arrives. Dropping a future must leave the connector in a usable
 /// state, and a dropped [`request`](Connector::request) should abort
-/// the in-flight operation where the protocol allows.
+/// the in-flight operation where the protocol allows. A dropped
+/// [`subscribe`](Connector::subscribe) future must release any
+/// protocol subscription it already established — nobody will ever
+/// hold the stream, so nothing else can end it. The engine also drops
+/// a [`start`](Connector::start) that outruns its lifecycle deadline;
+/// that must leave the connector in a state where the
+/// [`stop`](Connector::stop) the engine issues afterwards —
+/// immediately on a failed attach, or at shutdown/reset for a start
+/// driven from `run()` — fully winds it down.
 #[cfg(target_arch = "wasm32")]
 pub trait Connector {
     /// Establishes the connector's transport. Called by the engine when
