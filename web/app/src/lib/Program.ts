@@ -257,10 +257,16 @@ function migrateLegacyUiBlocks(program: Program): MigrationReport {
       };
     }
     block.inputs = inputs;
-    block.outputs =
-      outPin && outPin.value != null
-        ? { out: { value: outPin.value } }
-        : undefined;
+    if (outPin && outPin.value != null) {
+      block.outputs = { out: { value: outPin.value } };
+    } else {
+      // Remove the key outright rather than assigning `undefined`: the
+      // migrated object goes to `loadProgram` as-is (no JSON round-trip
+      // to drop the key), and serde on the wasm side rejects a present
+      // `outputs` key holding `undefined` — an absent key falls back to
+      // the empty default.
+      delete block.outputs;
+    }
   }
 
   if (!migrated.size || !program.links) return report;
