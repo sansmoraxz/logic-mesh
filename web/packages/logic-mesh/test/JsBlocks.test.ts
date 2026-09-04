@@ -4,7 +4,11 @@
 // test uses its own connector name; each test also runs its own engine
 // session, stopped afterwards.
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BlockNotification, EngineSession } from '../src/index';
+import type {
+  BlockNotification,
+  EngineCommand,
+  EngineSession,
+} from '../src/index';
 import { connectorRegistered, defineJsBlocks, startEngine } from '../src/index';
 
 const sessions: EngineSession[] = [];
@@ -291,6 +295,63 @@ describe('defineJsBlocks', () => {
     expect(await until(() => lastOut(notes, id), 'the owner answer')).toBe(
       'mine',
     );
+  });
+
+  it('does not hijack a name a new owner took after an engine reset', async () => {
+    const { session: s, notes } = session();
+    const a = defineJsBlocks({ echo: () => 'A' }, { name: 'jsb-handover' });
+    await a.attach(s.command);
+
+    // The reset detaches and unregisters A's connector behind the
+    // façade's back; B then takes the freed name as its rightful new
+    // owner.
+    await s.reset();
+    const b = defineJsBlocks({ echo: () => 'B' }, { name: 'jsb-handover' });
+    await b.attach(s.command);
+
+    // A's re-attach must reject: an early-return "success" (what a
+    // stale I-registered-this boolean produced) would leave A's blocks
+    // silently answered by B's functions.
+    await expect(a.attach(s.command)).rejects.toThrow(
+      /already registered under 'jsb-handover'/,
+    );
+
+    // And A's detach must be a no-op — the live registration is B's,
+    // whatever A once owned before the reset.
+    await a.detach(s.command);
+    expect(await s.command.listConnectors()).toContain('jsb-handover');
+    expect(connectorRegistered('jsb-handover')).toBe(true);
+
+    // B is untouched and still answers.
+    const id = await b.addBlock(s.command, 'echo');
+    await s.command.writeBlockInput(id, 'in', 1);
+    expect(await until(() => lastOut(notes, id), "B's answer")).toBe('B');
+  });
+
+  it('serializes overlapping attach calls into one addConnector round-trip', async () => {
+    const { session: s } = session();
+    const jsBlocks = defineJsBlocks(
+      { echo: (value) => value },
+      { name: 'jsb-race' },
+    );
+
+    // Count the engine round-trips through a delegating wrapper — only
+    // the two methods attach uses need to exist.
+    let addCalls = 0;
+    const counting = {
+      listConnectors: () => s.command.listConnectors(),
+      addConnector: (name: string) => {
+        addCalls += 1;
+        return s.command.addConnector(name);
+      },
+    } as unknown as EngineCommand;
+
+    // Two same-tick attaches: unserialized, both would pass the
+    // listConnectors check and the loser would surface the engine's
+    // "already managed" error.
+    await Promise.all([jsBlocks.attach(counting), jsBlocks.attach(counting)]);
+    expect(addCalls).toBe(1);
+    expect(await s.command.listConnectors()).toContain('jsb-race');
   });
 
   it('turns nulls into undefined across the bridge — a measured limit', async () => {

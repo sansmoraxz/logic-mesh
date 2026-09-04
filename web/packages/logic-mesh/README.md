@@ -169,16 +169,21 @@ The executor may be re-invoked with the same inputs if the engine
 interrupts a call mid-flight (at-least-once), so side-effecting
 executors should be idempotent.
 
+Note the trigger trap: a reactive registered block (the default
+`runCondition: 'change'`) fires on link-delivered values — a bare
+`writeBlockInput` on its pins does not trigger execution. Use
+`runCondition: 'always'` or drive the pin over a link.
+
 ### Which extension point to use
 
 The three JS extension points overlap on purpose — each trades ergonomics
 for capability at a different spot. Pick by the shape of what you are adding:
 
-| You are adding…                                                                                                   | Use                                          | Because                                                                                                                                                                                                                                                                    |
-| ----------------------------------------------------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| A function the graph calls with one value (a transform, a lookup, a service call)                                 | `defineJsBlocks`                             | One `in` → one `out` through a `Request` block: attach/detach on a **running** engine, a `timeout` pin, and a cancelled call is retried automatically (at-least-once — make handlers idempotent). Several inputs travel as one object on the single `in` pin.              |
-| A real block: several **independently wired** input pins, typed pins with defaults, an entry in the block library | `registerBlock` / `defineBlock` (TypedBlock) | Only registered blocks get named pins that separate upstream blocks can each link to, per-pin kinds/defaults, and a catalog entry. Register **before** `session.start()` — block registration is not available on a running engine.                                        |
-| A stream of values pushed _into_ the graph, a sink, or a whole protocol (MQTT, WebSocket, …)                      | a custom connector                           | `subscribe`/`publish`/`request` with engine-managed lifecycle; `ExternalIn`/`ExternalOut`/`Request` blocks bind to it by name and address, so the binding is data and serializes with the program. `defineJsBlocks` is itself a connector specialized to the request case. |
+| You are adding…                                                                                     | Use                                          | Because                                                                                                                                                                                                                                                                                                                          |
+| --------------------------------------------------------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A function the graph calls with one value (a transform, a lookup, a service call)                   | `defineJsBlocks`                             | One `in` → one `out` through a `Request` block: attach/detach on a **running** engine, a `timeout` pin, and a cancelled call is retried automatically (at-least-once — make handlers idempotent). Several inputs travel as one object on the single `in` pin.                                                                    |
+| A real block: several **independently wired** input pins, typed pins, an entry in the block library | `registerBlock` / `defineBlock` (TypedBlock) | Only registered blocks get named pins that separate upstream blocks can each link to, per-pin kinds (defaults come from `defineBlock`'s schema layer — raw `registerBlock` pins carry name and kind only), and a catalog entry. Register **before** `session.start()` — block registration is not available on a running engine. |
+| A stream of values pushed _into_ the graph, a sink, or a whole protocol (MQTT, WebSocket, …)        | a custom connector                           | `subscribe`/`publish`/`request` with engine-managed lifecycle; `ExternalIn`/`ExternalOut`/`Request` blocks bind to it by name and address, so the binding is data and serializes with the program. `defineJsBlocks` is itself a connector specialized to the request case.                                                       |
 
 Rule of thumb: start with `defineJsBlocks`; move to `registerBlock` the moment
 you need a second independently-linked input pin or a library entry; drop to a

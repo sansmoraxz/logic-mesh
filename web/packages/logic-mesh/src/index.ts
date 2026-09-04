@@ -5,20 +5,21 @@ export {
   registerConnector,
   unregisterConnector,
   connectorRegistered,
+  connectorIs,
 } from './logic_mesh.js';
-export { defineBlock, TypedBlock } from './TypedBlock';
+export { defineBlock, TypedBlock } from './TypedBlock.js';
 export {
   createEngineSession,
   startEngine,
   EngineSession,
   type EngineSessionOptions,
-} from './EngineSession';
+} from './EngineSession.js';
 export {
   defineJsBlocks,
   type JsBlocks,
   type JsBlockFn,
   type JsBlocksOptions,
-} from './JsBlocks';
+} from './JsBlocks.js';
 
 /**
  * The callback a connector subscription pushes values through.

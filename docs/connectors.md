@@ -189,8 +189,10 @@ write to its `connector` / `address` pins over the existing `WriteBlockInputReq`
 
 ### 4.7 JavaScript connectors on wasm — `src/wasm/js_connector.rs`
 
-The module-level `registerConnector(name, obj)` export (with `unregisterConnector` and
-`connectorRegistered` beside it, and an `engine.registerConnector` convenience for pre-run setup)
+The module-level `registerConnector(name, obj)` export (with `unregisterConnector`,
+`connectorRegistered`, and `connectorIs` — which reports whether the live registry entry under a
+name is exactly a given JS object, the ownership check façades like `defineJsBlocks` rely on —
+beside it, and an `engine.registerConnector` convenience for pre-run setup)
 accepts a plain JavaScript object exposing `subscribe`, `publish`, and `request` (required) plus
 `start` and `stop` (optional). Each method may return a
 value or a Promise. Subscription delivery is callback-based:
@@ -683,7 +685,9 @@ shapes, and both stay:
   `timeout` pin, and at-least-once retry when the block actor cancels a call
   mid-flight. Several inputs travel as one dict on the `in` pin.
 - **`registerBlock`** for real block types: several independently linkable
-  input pins, per-pin kinds and defaults, an entry in the block library.
+  input pins, per-pin kinds (and, through `defineBlock`'s schema layer,
+  defaults — raw `registerBlock` pins carry name and kind only), an entry in
+  the block library.
   Registration happens before the engine runs, and the block executes inside
   the actor like any built-in.
 - A **full connector** whenever values flow on their own schedule — streams in

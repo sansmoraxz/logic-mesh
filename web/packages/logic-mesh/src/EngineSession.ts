@@ -1,4 +1,4 @@
-import type { BlockNotification } from './index';
+import type { BlockNotification } from './index.js';
 import type { BlocksEngine, EngineCommand } from './logic_mesh.js';
 import { initEngine } from './logic_mesh.js';
 

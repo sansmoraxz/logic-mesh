@@ -4,7 +4,7 @@
 // creates its own engine; sessions are stopped afterwards so no engine
 // loop outlives its test.
 import { afterEach, describe, expect, it } from 'vitest';
-import type { BlockNotification, EngineSession } from '../src/index';
+import type { BlockDesc, BlockNotification, EngineSession } from '../src/index';
 import { createEngineSession, initEngine, startEngine } from '../src/index';
 
 const UUID_RE =
@@ -97,6 +97,63 @@ describe('createEngineSession', () => {
 
     const id = await extra.addBlock('SineWave');
     expect(id).toMatch(UUID_RE);
+  });
+});
+
+describe('registerBlock / listBlocks round-trip', () => {
+  // The block registry is process-wide like the connector registry, so
+  // the names here are unique to this suite.
+  const desc = {
+    name: 'RoundTripAlways',
+    dis: 'Round-trip Always',
+    lib: 'roundtrip-test',
+    ver: '0.0.1',
+    category: 'Test',
+    doc: 'Runs every cycle.',
+    implementation: 'external',
+    inputs: [{ name: 'in', kind: 'number' }],
+    outputs: [{ name: 'out', kind: 'number' }],
+    runCondition: 'always',
+  } satisfies BlockDesc;
+
+  it("lists runCondition 'always' as 'always', and the listed desc re-registers", () => {
+    const session = track(createEngineSession({ sleepDuration: 10 }));
+    session.engine.registerBlock(desc);
+
+    const listed = (session.engine.listBlocks() as BlockDesc[]).find(
+      (b) => b.name === 'RoundTripAlways',
+    );
+    // The Display copy-paste bug used to render these as
+    // 'native'/'external' instead of 'change'/'always'.
+    expect(listed?.runCondition).toBe('always');
+    expect(listed?.implementation).toBe('external');
+
+    // The listed desc is itself a valid registration payload (under a
+    // fresh name — the registry rejects duplicates), proving the two
+    // conversions actually round-trip.
+    expect(() =>
+      session.engine.registerBlock({ ...listed, name: 'RoundTripAlways2' }),
+    ).not.toThrow();
+  });
+
+  it('rejects a wrong implementation or run condition with a field-naming error', () => {
+    const session = track(createEngineSession({ sleepDuration: 10 }));
+    // registerBlock only ever registers JS blocks, which are external
+    // by definition — 'native' is a caller mistake, not a choice.
+    expect(() =>
+      session.engine.registerBlock({
+        ...desc,
+        name: 'RoundTripNative',
+        implementation: 'native',
+      }),
+    ).toThrow(/implementation.*external/);
+    expect(() =>
+      session.engine.registerBlock({
+        ...desc,
+        name: 'RoundTripSometimes',
+        runCondition: 'sometimes',
+      }),
+    ).toThrow(/runCondition.*sometimes/);
   });
 });
 

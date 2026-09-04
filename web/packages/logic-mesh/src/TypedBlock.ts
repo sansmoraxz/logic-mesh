@@ -1,5 +1,5 @@
-import type { BlockDesc, Kind } from './index';
-import type { BlocksEngine } from './logic_mesh';
+import type { BlockDesc, Kind } from './index.js';
+import type { BlocksEngine } from './logic_mesh.js';
 import {
   z,
   ZodArray,

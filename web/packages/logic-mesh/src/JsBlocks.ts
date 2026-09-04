@@ -1,6 +1,7 @@
-import type { JsConnector } from './index';
+import type { JsConnector } from './index.js';
 import type { EngineCommand } from './logic_mesh.js';
 import {
+  connectorIs,
   connectorRegistered,
   registerConnector,
   unregisterConnector,
@@ -101,12 +102,33 @@ export class JsBlocks<T extends Record<string, JsBlockFn>> {
   private readonly connector: JsConnector;
 
   /**
-   * Whether this instance owns the current registry entry for
-   * {@link name}. Lets a re-attach distinguish our own leftover
-   * registration (fine to reuse) from a foreign connector squatting on
-   * the name (an error to silently hijack).
+   * Serializes {@link attach} and {@link detach} per instance — the
+   * same pattern as `EngineSession`'s control chain. Both operations
+   * are check-then-act against the live registry; two overlapping
+   * calls would race the check and the loser would surface the
+   * engine's "already managed" error for what is really an idempotent
+   * success.
    */
-  private registered = false;
+  private lifecycleChain: Promise<unknown> = Promise.resolve();
+
+  /**
+   * Whether this instance owns the current registry entry for
+   * {@link name}, decided against the LIVE registry: the entry must be
+   * this instance's own connector object (`connectorIs` compares JS
+   * object identity). A plain "I registered this" boolean cannot carry
+   * this — an engine reset unregisters connectors behind the façade's
+   * back, after which the same name may be re-registered by someone
+   * else, and the stale flag would bless a hijack.
+   */
+  private ownsRegistration(): boolean {
+    return connectorIs(this.name, this.connector);
+  }
+
+  private enqueue<R>(op: () => Promise<R>): Promise<R> {
+    const next = this.lifecycleChain.catch(() => {}).then(op);
+    this.lifecycleChain = next;
+    return next;
+  }
 
   constructor(functions: T, options: JsBlocksOptions = {}) {
     this.name = options.name ?? 'js';
@@ -162,23 +184,30 @@ export class JsBlocks<T extends Record<string, JsBlockFn>> {
    * {@link EngineSession} handle qualifies), and — like every engine
    * request — this only resolves while the engine runs unpaused.
    *
+   * Overlapping attach/detach calls on one instance are serialized
+   * internally, so two same-tick attaches both succeed (the second
+   * observes the first's work and no-ops).
+   *
    * Throws if the name is taken by a connector this instance does not
    * own — registered by someone else, attached or not.
    */
-  async attach(command: EngineCommand): Promise<void> {
+  attach(command: EngineCommand): Promise<void> {
+    return this.enqueue(() => this.attachNow(command));
+  }
+
+  private async attachNow(command: EngineCommand): Promise<void> {
     const attached = await command.listConnectors();
     if (attached.includes(this.name)) {
       // Only our own attachment is an idempotent success: a foreign
       // connector on the name would otherwise silently answer this
       // instance's blocks with someone else's functions.
-      if (this.registered) return;
+      if (this.ownsRegistration()) return;
       throw new Error(nameInUseMessage(this.name));
     }
 
     if (!connectorRegistered(this.name)) {
       registerConnector(this.name, this.connector);
-      this.registered = true;
-    } else if (!this.registered) {
+    } else if (!this.ownsRegistration()) {
       throw new Error(nameInUseMessage(this.name));
     }
     await command.addConnector(this.name);
@@ -187,21 +216,33 @@ export class JsBlocks<T extends Record<string, JsBlockFn>> {
   /**
    * Detaches the connector from the engine (`removeConnector` — the
    * engine stops it and unregisters it), or, when it was registered
-   * but never attached, just unregisters it. Acts only on an
-   * attachment this instance owns: a no-op when this instance never
-   * registered the name (a foreign same-name connector is left alone)
-   * and when there is nothing left to tear down — so calling it after
-   * an engine reset (which already detached everything) is safe.
+   * but never attached, just unregisters it. Acts only on a
+   * registration this instance owns — decided against the live
+   * registry, so a foreign same-name connector is left alone even when
+   * it took the name after an engine reset detached ours — and is a
+   * no-op when there is nothing left to tear down, so calling it after
+   * a reset (which already detached everything) is safe. Serialized
+   * with {@link attach} per instance.
    */
-  async detach(command: EngineCommand): Promise<void> {
-    if (!this.registered) return;
+  detach(command: EngineCommand): Promise<void> {
+    return this.enqueue(() => this.detachNow(command));
+  }
+
+  private async detachNow(command: EngineCommand): Promise<void> {
+    // The live registry entry must be ours: whatever this instance
+    // once registered, tearing down someone else's current attachment
+    // (or registration) is never its call.
+    if (!this.ownsRegistration()) return;
     const attached = await command.listConnectors();
     if (attached.includes(this.name)) {
       await command.removeConnector(this.name);
-    } else if (connectorRegistered(this.name)) {
+    } else if (this.ownsRegistration()) {
+      // Re-checked after the await: a reset can unregister this
+      // connector — and a third party re-register the name — while
+      // `listConnectors` was in flight, and a foreign registration is
+      // never ours to tear down.
       unregisterConnector(this.name);
     }
-    this.registered = false;
   }
 
   /**

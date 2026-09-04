@@ -294,8 +294,63 @@ impl Connector for JsConnector {
 /// connector named `name` is already registered.
 #[wasm_bindgen(js_name = "registerConnector")]
 pub fn register_js_connector(name: String, connector: JsValue) -> Result<(), String> {
-    let connector = JsConnector::from_js(&connector)?;
-    register_connector(&name, ConnectorHandle::new(connector)).map_err(|err| err.to_string())
+    let js_connector = JsConnector::from_js(&connector)?;
+    register_connector(&name, ConnectorHandle::new(js_connector)).map_err(|err| err.to_string())?;
+    // Record the raw object only once the registration is in — the
+    // identity table must never claim a name the registry rejected.
+    JS_CONNECTOR_OBJECTS.with_borrow_mut(|map| {
+        map.insert(name, connector);
+    });
+    Ok(())
+}
+
+thread_local! {
+    /// The raw JS object registered under each connector name, kept so
+    /// [`connectorIs`](js_connector_is) can answer identity questions
+    /// the type-erased registry cannot: a [`ConnectorHandle`] wraps a
+    /// `dyn Connector` with no downcast path back to the [`JsConnector`]
+    /// (and the `this` it retains). Every JS-side registration goes
+    /// through [`registerConnector`](register_js_connector), which
+    /// refreshes the entry, so whenever the registry holds a JS-owned
+    /// name this table holds the object it was registered with. An
+    /// entry can outlive its registration (engine reset and detach
+    /// unregister through the core registry, which knows nothing of
+    /// this table) — such stragglers are pruned lazily by
+    /// [`connectorIs`](js_connector_is) once it sees the name gone.
+    static JS_CONNECTOR_OBJECTS: std::cell::RefCell<
+        std::collections::HashMap<String, JsValue>,
+    > = std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// Reports whether the connector currently registered under `name` is
+/// a JavaScript connector wrapping exactly `connector` — compared by
+/// JS object identity (`===`), the way JS itself distinguishes two
+/// same-shaped objects.
+///
+/// This is what lets a JS façade decide *ownership* against the live
+/// registry rather than its own bookkeeping: a boolean "I registered
+/// this" flag goes stale the moment an engine reset unregisters the
+/// connector behind the façade's back, after which the same name may
+/// be re-registered by someone else. `false` therefore means either
+/// "nothing is registered under `name`" or "something else is".
+///
+/// Exported to JS as `connectorIs`.
+#[wasm_bindgen(js_name = "connectorIs")]
+pub fn js_connector_is(name: &str, connector: JsValue) -> bool {
+    if get_connector(name).is_none() {
+        // The registration is gone (reset, detach, or explicit
+        // unregister); drop the stale object reference too, so the
+        // table cannot pin dead JS objects for the process lifetime.
+        JS_CONNECTOR_OBJECTS.with_borrow_mut(|map| {
+            map.remove(name);
+        });
+        return false;
+    }
+
+    JS_CONNECTOR_OBJECTS.with_borrow(|map| {
+        // `JsValue::eq` is JS `===` — reference identity for objects.
+        map.get(name).is_some_and(|stored| *stored == connector)
+    })
 }
 
 /// Removes the connector registered under `name` from the
@@ -313,7 +368,14 @@ pub fn register_js_connector(name: String, connector: JsValue) -> Result<(), Str
 /// Exported to JS as `unregisterConnector`.
 #[wasm_bindgen(js_name = "unregisterConnector")]
 pub fn unregister_js_connector(name: String) -> bool {
-    unregister_connector(&name).is_some()
+    let removed = unregister_connector(&name).is_some();
+    if removed {
+        // Keep the identity table in step — see JS_CONNECTOR_OBJECTS.
+        JS_CONNECTOR_OBJECTS.with_borrow_mut(|map| {
+            map.remove(&name);
+        });
+    }
+    removed
 }
 
 /// Reports whether a connector is registered under `name` in the
