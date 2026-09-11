@@ -1,5 +1,6 @@
 import type { ConnectorCallback, EngineCommand, JsConnector } from 'logic-mesh';
 import {
+  connectorIs,
   connectorRegistered,
   registerConnector,
   unregisterConnector,
@@ -208,20 +209,27 @@ export function forgetBlockAddress(block: Block) {
  * before the engine runs; registration alone does not attach it. Goes
  * through the module-level wasm exports — never engine methods, whose
  * wasm borrow is held for the engine's whole life once `run()` has
- * been polled. Tolerates an existing registration (e.g. after a Vite
- * HMR module re-init, where the wasm registry outlives this module)
- * by replacing it with this module's instance.
+ * been polled. When the registry already holds THIS module's instance
+ * (identity-checked via `connectorIs`) it is left untouched — an
+ * unregister/register round trip would open a window with no `ui`
+ * connector registered, during which an engine holding it attached
+ * would fault every widget ExternalIn/ExternalOut. Only a foreign
+ * registration — a previous module instance's connector after a Vite
+ * HMR re-init, where the wasm registry outlives this module but each
+ * re-init creates a fresh `uiConnector` object — is replaced.
  */
 export function registerUiConnector() {
+  if (connectorIs(UI_CONNECTOR_NAME, uiConnector)) return;
   if (connectorRegistered(UI_CONNECTOR_NAME)) {
     unregisterConnector(UI_CONNECTOR_NAME);
   }
   registerConnector(UI_CONNECTOR_NAME, uiConnector);
 }
 
-// Serializes attach attempts: `resetEngine` resolves when Reset is
-// merely enqueued, and concurrent attaches (initial mount + reset
-// handler) must not interleave their check-then-attach sequences.
+// Serializes attach attempts: the app resets via `session.reset()`,
+// which resolves when Reset is merely enqueued, and concurrent
+// attaches (initial mount + reset handler) must not interleave their
+// check-then-attach sequences.
 let attachChain: Promise<void> = Promise.resolve();
 
 async function doAttach(command: EngineCommand): Promise<void> {

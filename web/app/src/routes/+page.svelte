@@ -51,7 +51,8 @@
     clipboardWrite,
   } from '$lib/Clipboard';
 
-  const { start, blocks, command, connectorCommand, startWatch } = useEngine();
+  const { start, reset, blocks, command, connectorCommand, startWatch } =
+    useEngine();
 
   const nodeTypes = { custom: BlockNode };
 
@@ -220,8 +221,38 @@
     }
   }
 
-  async function onReset() {
-    await command.resetEngine();
+  // Serializes whole program operations (reset, load, paste) — the
+  // same idiom as Engine.ts's `commandChain`, one level up. That chain
+  // makes individual `command` calls overlap-proof, but a program
+  // operation is a multi-step pipeline (reset → clear the model →
+  // re-attach the connector → populate), and two pipelines running
+  // concurrently interleave those steps: the second pipeline's
+  // `clearAll` fires before the first has populated the model, and its
+  // Reset reaches the engine before the first `loadProgram` — both
+  // sides end up with the union of the two programs instead of the
+  // last one. Queueing each pipeline behind the previous makes the
+  // last-clicked program win. Each caller receives its own pipeline's
+  // rejection unchanged; only the NEXT link swallows a predecessor's
+  // (it belongs to that caller, and is spent for chaining).
+  let programChain: Promise<void> = Promise.resolve();
+
+  function enqueueProgramOp(op: () => Promise<void>): Promise<void> {
+    const next = programChain.catch(() => {}).then(op);
+    programChain = next;
+    return next;
+  }
+
+  async function doReset() {
+    // Reset travels on the session's private control handle (via
+    // `useEngine().reset`), never the shared `command` handle — a
+    // reset issued there while e.g. `loadProgram` or a palette drop's
+    // `addBlock` holds that handle mid-round-trip would throw
+    // "recursive use of an object detected". It resolves when the
+    // Reset is merely enqueued, which suffices here: engine messages
+    // are FIFO, and the attach below awaits a request/reply barrier
+    // ordered after it. A failure still rejects doReset's promise —
+    // onPaste/onLoad and onReset surface it from there.
+    await reset();
     model.clearAll();
     // Reset unregisters and stops attached connectors; the UI connector
     // must be re-registered and re-attached for widget blocks to work.
@@ -230,6 +261,10 @@
     await attachUiConnector(connectorCommand).catch((err) =>
       toast.error(`Failed to attach UI connector: ${err}`),
     );
+  }
+
+  function onReset() {
+    return enqueueProgramOp(doReset);
   }
 
   function onCopy() {
@@ -246,19 +281,23 @@
     toast.success('Program copied to clipboard');
   }
 
+  // Paste and load enqueue reset + populate as ONE pipeline — calling
+  // onReset() and chaining off it would put the reset and the populate
+  // in separate queue slots, letting another operation land between
+  // them.
   function onPaste() {
-    onReset()
-      .then(async () => {
-        const clipText = await navigator.clipboard.readText();
-        await loadProgram(JSON.parse(clipText));
-      })
-      .catch((err) => toast.error(`Paste failed: ${err}`));
+    enqueueProgramOp(async () => {
+      await doReset();
+      const clipText = await navigator.clipboard.readText();
+      await loadProgram(JSON.parse(clipText));
+    }).catch((err) => toast.error(`Paste failed: ${err}`));
   }
 
   function onLoad(program: Program) {
-    onReset()
-      .then(async () => await loadProgram(program))
-      .catch((err) => toast.error(`Load failed: ${err}`));
+    enqueueProgramOp(async () => {
+      await doReset();
+      await loadProgram(program);
+    }).catch((err) => toast.error(`Load failed: ${err}`));
   }
 
   async function pasteSelection() {
@@ -513,7 +552,19 @@
       <Panel position="bottom-center">
         <ToolBar
           {blocks}
-          onAddBlock={(desc) => model.addBlock(desc)}
+          onAddBlock={(desc) => {
+            // Command serialization does not close this race: a Reset
+            // travels on the session's control handle, so it can still
+            // land between addBlock and the widget's follow-up pin
+            // writes, which then reject with "Block instance not
+            // found". Surface that instead of leaving the rejection
+            // unhandled.
+            model
+              .addBlock(desc)
+              .catch((err) =>
+                toast.error(`Failed to add block '${desc.dis}': ${err}`),
+              );
+          }}
           {onReset}
           {onCopy}
           {onPaste}

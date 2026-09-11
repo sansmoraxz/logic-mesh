@@ -28,7 +28,7 @@
   interface Props {
     blocks: BlockDesc[];
     onAddBlock: (block: BlockDesc) => void;
-    onReset: () => void;
+    onReset: () => Promise<void>;
     onCopy: () => void;
     onPaste: () => void;
     onLoad: (program: Program) => void;
@@ -99,23 +99,32 @@
     }
   }
 
+  // onReset rejects when the engine reset fails. These click
+  // handlers are the end of the chain, so without a catch here the
+  // rejection would be unhandled: no toast, and the engine never reset
+  // while nothing tells the user so. (onPaste needs no such wrapper —
+  // it already toasts its own failures, reset included.)
+  function resetWithToast() {
+    onReset().catch((err) => toast.error(`Reset failed: ${err}`));
+  }
+
   function handleNew() {
     if (!isRunning) {
       resumeEngine().then(() => {
         selectedIndex = '';
-        onReset();
+        resetWithToast();
       });
     } else {
       selectedIndex = '';
-      onReset();
+      resetWithToast();
     }
   }
 
   function handleReset() {
     if (!isRunning) {
-      resumeEngine().then(() => onReset());
+      resumeEngine().then(() => resetWithToast());
     } else {
-      onReset();
+      resetWithToast();
     }
   }
 
